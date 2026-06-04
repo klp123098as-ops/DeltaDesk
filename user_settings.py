@@ -7,24 +7,8 @@ import ccxt.async_support as ccxt
 
 from config import DEFAULT_EXCHANGES, DEFAULT_MIN_ARB_PCT, SETTINGS_FILE
 
-AVAILABLE_EXCHANGES = sorted(
-    {
-        "binance",
-        "bybit",
-        "okx",
-        "kraken",
-        "kucoin",
-        "gate",
-        "mexc",
-        "bitget",
-        "htx",
-        "coinex",
-        "bitfinex",
-        "cryptocom",
-        "bingx",
-    }
-)
-
+# Динамически получаем список всех бирж, которые поддерживает библиотека ccxt
+AVAILABLE_EXCHANGES = set(ccxt.exchanges)
 
 def _load_raw() -> dict:
     if not SETTINGS_FILE.exists():
@@ -104,12 +88,14 @@ def add_user_exchange(user_id: int, exchange_id: str) -> tuple[bool, str]:
     name = exchange_id.strip().lower()
     if not is_valid_exchange(name):
         return False, (
-            f"Биржа «{exchange_id}» недоступна.\n"
-            f"Доступные: {', '.join(AVAILABLE_EXCHANGES)}"
+            f"Биржа «{exchange_id}» не поддерживается библиотекой ccxt.\n"
+            "Проверьте правильность написания ID (например: binance, upbit, bitget)."
         )
     current = get_user_exchanges(user_id)
     if name in current:
         return False, f"{name.upper()} уже в списке."
+    if len(current) >= 20:
+        return False, "Максимум 20 бирж. Уберите лишние через /remove."
     current.append(name)
     set_user_exchanges(user_id, current)
     return True, f"Добавлено: {name.upper()}. Сейчас: {_fmt_list(current)}"

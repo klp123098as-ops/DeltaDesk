@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 from analysis import analyze_symbol
-from config import BOT_TOKEN, PORT, WEBHOOK_SECRET, WEBHOOK_URL
+from config import BOT_TOKEN, PORT, WEBHOOK_SECRET, WEBHOOK_URL, SCAN_COINS
 from keyboards import (
     BTN_EX,
     BTN_HELP,
@@ -35,6 +35,7 @@ from market import (
     normalize_symbol,
     scan_top_arbitrage,
     symbol_base,
+    close_all_exchanges,
 )
 from user_settings import (
     AVAILABLE_EXCHANGES,
@@ -152,11 +153,11 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     mine = get_user_exchanges(uid)
-    available = ", ".join(e.upper() for e in AVAILABLE_EXCHANGES)
     await update.message.reply_text(
-        f"✅ Ваши биржи ({len(mine)}):\n{_fmt_ex(mine)}\n\n"
-        f"📋 Можно добавить:\n{available}\n\n"
-        "Добавить: /add bitget\nУбрать: /remove mexc"
+        f"✅ Ваши биржи ({len(mine)}/20):\n{_fmt_ex(mine)}\n\n"
+        "Вы можете добавить любую из 100+ бирж (binance, upbit, bitget...)\n"
+        "Добавить: /add id_биржи\nУбрать: /remove id_биржи\n"
+        "Полный список ID можно найти в документации CCXT."
     )
 
 
@@ -332,12 +333,14 @@ async def _send_analysis(update: Update, coin: str, edit: bool = False) -> None:
 
 async def _send_top(update: Update) -> None:
     msg = _chat(update)
-    wait = await msg.reply_text("⏳ Сканирую монеты…")
+    wait = await msg.reply_text("⏳ Сканирую топ-монеты (BTC, ETH, SOL, XRP, DOGE, PEPE)...")
     try:
         uid = update.effective_user.id
         min_pct = get_min_arb_pct(uid)
         exchanges = get_user_exchanges(uid)
-        items = await scan_top_arbitrage(POPULAR_COINS[:6], exchanges, min_arb_pct=min_pct)
+        # Ограничиваем список для скорости
+        top_coins = ["BTC", "ETH", "SOL", "XRP", "DOGE", "PEPE"]
+        items = await scan_top_arbitrage(top_coins, exchanges, min_arb_pct=min_pct)
         await wait.edit_text(
             format_top_arbitrage(items, min_arb_pct=min_pct),
             reply_markup=main_menu_keyboard(),
@@ -347,8 +350,15 @@ async def _send_top(update: Update) -> None:
         await wait.edit_text("Ошибка сканирования. Попробуйте позже.")
 
 
+async def on_shutdown(app: Application) -> None:
+    logger.info("Закрытие соединений...")
+    await close_all_exchanges()
+
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
+    # Добавляем обработчик завершения
+    app.post_shutdown = on_shutdown
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("price", price_cmd))
@@ -382,18 +392,18 @@ def main() -> None:
     app = build_app()
 
     if WEBHOOK_URL:
-        logger.info("Запуск в режиме Webhook: %s", WEBHOOK_URL)
+        logger.info("Запуск Webhook на порту %s", PORT)
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path="telegram",
             webhook_url=f"{WEBHOOK_URL}/telegram",
-            secret_token=WEBHOOK_SECRET or None,
-            close_loop=False # Важно для облака
+            secret_token=WEBHOOK_SECRET or None
         )
     else:
-        logger.info("Запуск в режиме Polling (локально)")
-        app.run_polling(close_loop=False)
+        # Режим Polling для Render (экспериментально для скорости)
+        logger.info("Запуск в режиме Polling (24/7)")
+        app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
