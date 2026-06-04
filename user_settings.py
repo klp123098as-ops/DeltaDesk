@@ -5,9 +5,7 @@ from pathlib import Path
 
 import ccxt.async_support as ccxt
 
-from config import DEFAULT_EXCHANGES, DEFAULT_MIN_ARB_PCT
-
-SETTINGS_FILE = Path(__file__).resolve().parent / "user_data.json"
+from config import DEFAULT_EXCHANGES, DEFAULT_MIN_ARB_PCT, SETTINGS_FILE
 
 AVAILABLE_EXCHANGES = sorted(
     {

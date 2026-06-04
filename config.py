@@ -13,6 +13,10 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 PORT = int(os.getenv("PORT", "8080"))
 
+# Папка для данных (важно для облака)
+DATA_DIR = Path(os.getenv("DATA_DIR", ".")).resolve()
+SETTINGS_FILE = DATA_DIR / "user_data.json"
+
 # Биржи по умолчанию (если пользователь не настроил свой список)
 DEFAULT_EXCHANGES = [
     "binance",

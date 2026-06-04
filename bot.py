@@ -1,5 +1,7 @@
 import logging
 import re
+import asyncio
+from aiohttp import web
 
 from telegram import Update
 from telegram.ext import (
@@ -363,30 +365,34 @@ def build_app() -> Application:
     return app
 
 
+async def health_check(request):
+    return web.Response(text="OK")
+
 def main() -> None:
     if not BOT_TOKEN:
-        raise SystemExit(
-            "Нет BOT_TOKEN.\n"
-            "1) Откройте @BotFather → /newbot → скопируйте токен\n"
-            "2) Локально: файл .env → BOT_TOKEN=...\n"
-            "3) Облако: см. DEPLOY_FREE.md"
-        )
+        raise SystemExit("Нет BOT_TOKEN")
 
     app = build_app()
 
     if WEBHOOK_URL:
-        logger.info("Режим webhook: %s/telegram", WEBHOOK_URL)
+        # Режим для Render: запускаем веб-сервер + вебхук
+        logger.info("Запуск в режиме Webhook: %s", WEBHOOK_URL)
+        
+        # Создаем aiohttp приложение для health check
+        web_app = web.Application()
+        web_app.router.add_get("/", health_check)
+        
+        # Запускаем бота через webhook внутри aiohttp или встроенными средствами
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path="telegram",
             webhook_url=f"{WEBHOOK_URL}/telegram",
             secret_token=WEBHOOK_SECRET or None,
-            allowed_updates=Update.ALL_TYPES,
         )
     else:
-        logger.info("Режим polling (24/7 в облаке — см. DEPLOY_FREE.md)")
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("Запуск в режиме Polling (локально)")
+        app.run_polling()
 
 
 if __name__ == "__main__":
