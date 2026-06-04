@@ -29,13 +29,11 @@ DEFAULT_EXCHANGES = [
 ]
 
 # Список монет для расширенного сканирования (Топ арбитраж)
-# Здесь популярные + волатильные альткоины, где чаще бывает разница цен
+# Оставили 20 самых "арбитражных" монет для стабильности на Render
 SCAN_COINS = [
-    "BTC", "ETH", "SOL", "XRP", "DOGE", "TON", "ADA", "AVAX", "SHIB", "DOT", 
-    "LINK", "NEAR", "MATIC", "PEPE", "LTC", "ICP", "BCH", "UNI", "SUI", "APT", 
-    "OP", "ARB", "TIA", "SEI", "INJ", "RNDR", "GRT", "STX", "FIL", "ATOM", 
-    "IMX", "KAS", "WIF", "BONK", "FLOKI", "NOT", "TRX", "ETC", "XLM", "VET",
-    "THETA", "MKR", "LDO", "FET", "AGIX", "TAO", "ORDI", "1000SATS", "AAVE", "AR"
+    "BTC", "ETH", "SOL", "XRP", "DOGE", "TON", "AVAX", "SHIB", "DOT",
+    "LINK", "NEAR", "MATIC", "PEPE", "LTC", "ICP", "SUI", "APT",
+    "ARB", "RNDR", "WIF"
 ]
 REQUEST_TIMEOUT_MS = 15_000 # 15 сек — золотая середина
 
