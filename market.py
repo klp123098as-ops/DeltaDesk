@@ -7,10 +7,9 @@ from dataclasses import dataclass
 
 import ccxt.async_support as ccxt
 
-logger = logging.getLogger(__name__)
+from config import REQUEST_TIMEOUT_MS
 
-# Настройки таймаутов
-REQUEST_TIMEOUT_MS = 10000
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ExchangePrice:
@@ -31,6 +30,10 @@ FAILED_CACHE_TTL = 3600
 
 # Глобальные инстансы бирж
 EXCHANGES_INSTANCES = {}
+
+# Максимальный размер истории цен (очистка для предотвращения утечки памяти)
+MAX_PRICE_HISTORY_SIZE = 500
+PRICE_HISTORY_CLEANUP_INTERVAL = 3600  # очищать каждый час
 
 def _num(val) -> float | None:
     if val is None: return None
@@ -156,6 +159,8 @@ import aiohttp
 LAST_SIGNALS = {}
 # История цен для отслеживания скачков
 PRICE_HISTORY = {}
+# Время последней очистки PRICE_HISTORY
+LAST_PRICE_HISTORY_CLEANUP = time.time()
 
 async def get_fear_greed_index() -> str:
     """Получает индекс страха и жадности с Alternative.me"""
@@ -170,6 +175,20 @@ async def get_fear_greed_index() -> str:
                 return f"{emoji} <b>Индекс страха и жадности: {val}/100</b> ({label})"
     except Exception:
         return ""
+
+def _cleanup_price_history():
+    """Очищает старые данные из PRICE_HISTORY для предотвращения утечки памяти."""
+    global LAST_PRICE_HISTORY_CLEANUP
+    now = time.time()
+    
+    if now - LAST_PRICE_HISTORY_CLEANUP > PRICE_HISTORY_CLEANUP_INTERVAL:
+        if len(PRICE_HISTORY) > MAX_PRICE_HISTORY_SIZE:
+            # Удаляем половину самых старых записей
+            keys_to_delete = list(PRICE_HISTORY.keys())[:len(PRICE_HISTORY) // 2]
+            for key in keys_to_delete:
+                del PRICE_HISTORY[key]
+            logger.info(f"Очищена история цен: удалено {len(keys_to_delete)} записей")
+        LAST_PRICE_HISTORY_CLEANUP = now
 
 async def scan_top_arbitrage(bases: list[str], exchanges: list[str], min_arb_pct: float = 0.0):
     async def _scan(base):
@@ -207,6 +226,9 @@ async def get_new_signals(bases: list[str], exchanges: list[str], min_pct: float
 
 async def get_price_jumps(bases: list[str], threshold_pct: float = 3.0):
     """Отслеживает резкие изменения цены на Binance."""
+    # Периодическая очистка истории цен
+    _cleanup_price_history()
+    
     jumps = []
     # Используем Binance как эталон для скачков цены
     symbol_list = [f"{b}/USDT" for b in bases[:15]]
