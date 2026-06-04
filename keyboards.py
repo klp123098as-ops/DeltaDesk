@@ -4,8 +4,10 @@ POPULAR_COINS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "TON", "ADA"]
 
 # Тексты кнопок нижней панели (Reply keyboard)
 BTN_TOP = "📊 Топ арбитраж"
-BTN_EX = "⚙️ Биржи"
+BTN_EX = "⚙️ Мои Биржи"
 BTN_MIN = "📉 Мин %"
+BTN_SIGNALS = "🔔 Сигналы"
+BTN_ALL_EX = "🏛 Все Биржи"
 BTN_SETTINGS = "🔧 Настройки"
 BTN_HELP = "❓ Помощь"
 BTN_MENU = "🏠 Меню"
@@ -15,8 +17,9 @@ def reply_panel_keyboard() -> ReplyKeyboardMarkup:
     """Постоянная панель внизу чата."""
     return ReplyKeyboardMarkup(
         [
-            [BTN_TOP, BTN_EX, BTN_MIN],
-            [BTN_SETTINGS, BTN_HELP, BTN_MENU],
+            [BTN_TOP, BTN_SIGNALS, BTN_MIN],
+            [BTN_EX, BTN_ALL_EX, BTN_SETTINGS],
+            [BTN_HELP, BTN_MENU],
             [
                 KeyboardButton("BTC"),
                 KeyboardButton("ETH"),
@@ -68,6 +71,9 @@ def min_pct_keyboard(current: float) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
+    
+    # Добавляем кнопку для ввода своего значения
+    rows.append([InlineKeyboardButton("⌨️ Ввести свой %", callback_data="min_custom")])
     rows.append([InlineKeyboardButton("◀️ Меню", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
 

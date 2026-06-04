@@ -3,7 +3,7 @@ import re
 import asyncio
 from aiohttp import web
 
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -22,6 +22,8 @@ from keyboards import (
     BTN_MIN,
     BTN_SETTINGS,
     BTN_TOP,
+    BTN_SIGNALS,
+    BTN_ALL_EX,
     POPULAR_COINS,
     main_menu_keyboard,
     min_pct_keyboard,
@@ -343,6 +345,8 @@ PANEL_ACTIONS = {
     BTN_TOP: "_top",
     BTN_EX: "_ex",
     BTN_MIN: "_min",
+    BTN_SIGNALS: "_signals",
+    BTN_ALL_EX: "_all_ex",
     BTN_SETTINGS: "_settings",
     BTN_HELP: "_help",
     BTN_MENU: "_menu",
@@ -360,6 +364,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if action == "_min":
         await min_cmd(update, context)
+        return
+    if action == "_signals":
+        await signals_cmd(update, context)
+        return
+    if action == "_all_ex":
+        await all_exchanges_cmd(update, context)
         return
     if action == "_settings":
         await settings_cmd(update, context)
@@ -471,8 +481,26 @@ async def on_shutdown(app: Application) -> None:
     logger.info("Закрытие соединений...")
     await close_all_exchanges()
 
+async def post_init(application: Application) -> None:
+    """Действия после запуска бота: настройка подсказок команд."""
+    commands = [
+        BotCommand("start", "Запустить бота"),
+        BotCommand("price", "Узнать цену (напр. /price BTC)"),
+        BotCommand("top", "Топ арбитражных связок"),
+        BotCommand("signals", "Настройка авто-сигналов (on/off)"),
+        BotCommand("min", "Установить мин. % (напр. /min 0.3)"),
+        BotCommand("exchanges", "Ваши выбранные биржи"),
+        BotCommand("all_exchanges", "Список всех доступных бирж"),
+        BotCommand("add", "Добавить биржу (напр. /add bybit)"),
+        BotCommand("remove", "Удалить биржу"),
+        BotCommand("analyze", "Тех. анализ монеты"),
+        BotCommand("help", "Справка по командам"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("Подсказки команд установлены")
+
 def build_app() -> Application:
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     # Добавляем обработчик завершения
     app.post_shutdown = on_shutdown
     
