@@ -29,6 +29,7 @@ from keyboards import (
     min_pct_keyboard,
     price_actions_keyboard,
     reply_panel_keyboard,
+    exchange_list_keyboard,
 )
 from market import (
     fetch_prices,
@@ -168,10 +169,11 @@ async def exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     uid = update.effective_user.id
     mine = get_user_exchanges(uid)
     await update.message.reply_text(
-        f"✅ Ваши биржи ({len(mine)}/20):\n{_fmt_ex(mine)}\n\n"
-        "Вы можете добавить любую из 100+ бирж (binance, upbit, bitget...)\n"
-        "Добавить: /add id_биржи\nУбрать: /remove id_биржи\n"
-        "Полный список ID можно найти в документации CCXT."
+        f"⚙️ <b>Управление вашими биржами:</b>\n\n"
+        f"Ваш список ({len(mine)}/20): <code>{_fmt_ex(mine)}</code>\n\n"
+        "Выберите биржи из списка популярных или нажмите 'Вперед' для поиска других:",
+        reply_markup=exchange_list_keyboard(page=0, user_id=uid),
+        parse_mode="HTML"
     )
 
 
@@ -197,18 +199,8 @@ async def reset_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def all_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает полный список всех бирж, которые знает библиотека ccxt."""
-    all_ex = sorted(list(AVAILABLE_EXCHANGES))
-    text = "🏛 <b>Все доступные биржи (CCXT):</b>\n\n"
-    text += ", ".join(all_ex)
-    text += "\n\nДобавить: <code>/add id_биржи</code>"
-    
-    # Сообщение может быть длинным, разбиваем по 4000 символов
-    if len(text) > 4000:
-        for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i+4000], parse_mode="HTML")
-    else:
-        await update.message.reply_text(text, parse_mode="HTML")
+    """Показывает интерактивное меню выбора бирж."""
+    await exchanges_cmd(update, context)
 
 
 async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -291,8 +283,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.message.reply_text(HELP_TEXT, reply_markup=main_menu_keyboard())
         return
     if data == "ex":
-        await query.message.reply_text(
-            f"Ваши биржи:\n{_fmt_ex(get_user_exchanges(uid))}\n\n/add /remove"
+        await exchanges_cmd(update, context)
+        return
+    if data.startswith("ex_pg:"):
+        page = int(data.split(":")[1])
+        await query.edit_message_reply_markup(reply_markup=exchange_list_keyboard(page, uid))
+        return
+    if data.startswith("ex_tgl:"):
+        _, ex_id, pg = data.split(":")
+        page = int(pg)
+        current = get_user_exchanges(uid)
+        if ex_id in current:
+            remove_user_exchange(uid, ex_id)
+        else:
+            add_user_exchange(uid, ex_id)
+        
+        # Обновляем сообщение и клавиатуру
+        mine = get_user_exchanges(uid)
+        await query.edit_message_text(
+            f"⚙️ <b>Управление вашими биржами:</b>\n\n"
+            f"Ваш список ({len(mine)}/20): <code>{_fmt_ex(mine)}</code>\n\n"
+            "Выберите биржи из списка популярных или нажмите 'Вперед' для поиска других:",
+            reply_markup=exchange_list_keyboard(page, uid),
+            parse_mode="HTML"
         )
         return
     if data == "settings":

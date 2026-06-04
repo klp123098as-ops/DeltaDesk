@@ -78,6 +78,47 @@ def min_pct_keyboard(current: float) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+from user_settings import AVAILABLE_EXCHANGES, get_user_exchanges
+
+def exchange_list_keyboard(page: int = 0, user_id: int | None = None) -> InlineKeyboardMarkup:
+    """Интерактивное меню выбора бирж с пагинацией."""
+    # Популярные биржи (выводим первыми)
+    popular = ["binance", "bybit", "okx", "mexc", "bitget", "bingx", "gate", "kucoin", "kraken", "htx"]
+    
+    # Все остальные из CCXT по алфавиту
+    others = sorted([ex for ex in AVAILABLE_EXCHANGES if ex not in popular])
+    full_list = popular + others
+    
+    per_page = 10
+    start = page * per_page
+    end = start + per_page
+    current_page_ex = full_list[start:end]
+    
+    user_exchanges = get_user_exchanges(user_id) if user_id else []
+    
+    rows = []
+    for ex in current_page_ex:
+        is_added = ex in user_exchanges
+        label = f"✅ {ex.upper()}" if is_added else f"➕ {ex.upper()}"
+        # Префикс 'ex_tgl:' для переключения статуса биржи
+        rows.append([InlineKeyboardButton(label, callback_data=f"ex_tgl:{ex}:{page}")])
+    
+    # Навигация
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"ex_pg:{page-1}"))
+    
+    max_pages = (len(full_list) - 1) // per_page
+    if end < len(full_list):
+        nav_row.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"ex_pg:{page+1}"))
+    
+    if nav_row:
+        rows.append(nav_row)
+        
+    rows.append([InlineKeyboardButton("◀️ Меню", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 def price_actions_keyboard(coin: str) -> InlineKeyboardMarkup:
     base = coin.upper().split("/")[0]
     return InlineKeyboardMarkup(
