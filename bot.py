@@ -72,33 +72,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 HELP_TEXT = """
-🤖 DeltaDesk — цены с разных бирж
+🤖 <b>DeltaDesk — твой крипто-сканер</b>
 
-Цены:
-/price BTC — любая монета с USDT (PEPE, SHIB, WIF…)
-/analyze BTC — краткий анализ
-/top — топ арбитража (популярные монеты)
-Кнопки — только топ; остальное вводом: /price ТИКЕР
+<b>Команды:</b>
+/price BTC — цена на всех биржах
+/top — лучший арбитраж прямо сейчас
+/alert BTC 65000 — уведомление по цене
+/analyze BTC — тех. анализ + Индекс Страха
 
-Ваши биржи:
-/exchanges — список
-/add bybit — добавить
-/remove mexc — убрать
-/reset — стандартный список
-/all_exchanges — полный список всех бирж (100+)
+<b>Настройки:</b>
+/signals on/off — авто-уведомления (фон)
+/min 0.3 — порог арбитража в %
+/exchanges — управление биржами
+/all_exchanges — список всех 100+ бирж
 
-Мин. % арбитража (топ и подсветка):
-/min — текущий порог
-/min 0.05 — показывать от 0.05%
-/min 0 — показывать всё
-Можно просто отправить число в чат (например 0.33)
+<b>Админ (если доступно):</b>
+/allow ID — дать доступ
+/deny ID — закрыть доступ
+/whitelist — список пользователей
 
-Авто-сигналы (фон):
-/signals — статус
-/signals on — включить
-/signals off — выключить
-
-Панель внизу чата + кнопки под сообщениями.
+Просто нажми / и выбери команду!
 """.strip()
 
 
@@ -309,21 +302,28 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         base = context.args[0].upper()
         target_price = float(context.args[1].replace(",", "."))
         
-        # Получаем текущую цену для определения типа (выше/ниже)
-        prices = await fetch_prices(f"{base}/USDT", ["binance"])
-        if not prices or not prices[0].last:
-            await update.message.reply_text(f"❌ Не удалось получить цену {base} для настройки.")
+        # Пробуем получить цену с Binance или Bybit (самые стабильные)
+        prices = await fetch_prices(f"{base}/USDT", ["binance", "bybit"])
+        if not prices:
+            await update.message.reply_text(f"❌ Не удалось получить цену {base}. Попробуйте еще раз через секунду.")
             return
         
+        # Берем цену с первой ответившей биржи
         current = prices[0].last
+        if not current:
+            await update.message.reply_text(f"❌ Биржа не отдала цену для {base}. Попробуйте позже.")
+            return
+
         alert_type = "above" if target_price > current else "below"
         
         add_user_alert(uid, base, target_price, alert_type)
         await update.message.reply_text(
             f"✅ Уведомление создано!\n"
+            f"Текущая цена: {current}$\n"
             f"Пришлю сообщение, когда {base} будет {'выше' if alert_type == 'above' else 'ниже'} {target_price}$"
         )
-    except Exception:
+    except Exception as e:
+        logger.error(f"Alert error: {e}")
         await update.message.reply_text("Пример: <code>/alert BTC 65000</code>", parse_mode="HTML")
 
 
@@ -663,6 +663,7 @@ async def on_shutdown(app: Application) -> None:
 async def post_init(application: Application) -> None:
     """Действия после запуска бота: настройка подсказок команд."""
     try:
+        # Базовые команды для всех
         commands = [
             BotCommand("start", "Запустить бота"),
             BotCommand("price", "Цена (напр. /price BTC)"),
@@ -677,6 +678,19 @@ async def post_init(application: Application) -> None:
             BotCommand("analyze", "Анализ + Индекс Страха"),
             BotCommand("help", "Справка"),
         ]
+        
+        # Если задан ADMIN_ID, добавляем админ-команды в подсказки
+        if ADMIN_ID:
+            admin_commands = commands + [
+                BotCommand("allow", "Добавить в белый список"),
+                BotCommand("deny", "Удалить из белого списка"),
+                BotCommand("whitelist", "Список допущенных"),
+            ]
+            # Устанавливаем админ-команды специально для админа
+            from telegram import BotCommandScopeChat
+            await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+            
+        # Устанавливаем базовые команды для всех остальных
         await application.bot.set_my_commands(commands)
         logger.info("Подсказки команд успешно установлены")
     except Exception as e:
