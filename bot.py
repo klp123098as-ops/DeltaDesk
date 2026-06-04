@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 from analysis import analyze_symbol
-from config import BOT_TOKEN, PORT, WEBHOOK_SECRET, WEBHOOK_URL, SCAN_COINS
+from config import BOT_TOKEN, PORT, WEBHOOK_SECRET, WEBHOOK_URL, SCAN_COINS, DEFAULT_EXCHANGES
 from keyboards import (
     BTN_EX,
     BTN_HELP,
@@ -34,6 +34,8 @@ from market import (
     format_top_arbitrage,
     normalize_symbol,
     scan_top_arbitrage,
+    get_new_signals,
+    get_price_jumps,
     symbol_base,
     close_all_exchanges,
 )
@@ -46,6 +48,9 @@ from user_settings import (
     remove_user_exchange,
     reset_user_exchanges,
     set_min_arb_pct,
+    get_all_users_with_signals,
+    get_signals_enabled,
+    set_signals_enabled,
 )
 
 logging.basicConfig(
@@ -68,11 +73,18 @@ HELP_TEXT = """
 /add bybit — добавить
 /remove mexc — убрать
 /reset — стандартный список
+/all_exchanges — полный список всех бирж (100+)
 
 Мин. % арбитража (топ и подсветка):
 /min — текущий порог
 /min 0.05 — показывать от 0.05%
 /min 0 — показывать всё
+Можно просто отправить число в чат (например 0.33)
+
+Авто-сигналы (фон):
+/signals — статус
+/signals on — включить
+/signals off — выключить
 
 Панель внизу чата + кнопки под сообщениями.
 """.strip()
@@ -182,6 +194,87 @@ async def reset_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(msg)
 
 
+async def all_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает полный список всех бирж, которые знает библиотека ccxt."""
+    all_ex = sorted(list(AVAILABLE_EXCHANGES))
+    text = "🏛 <b>Все доступные биржи (CCXT):</b>\n\n"
+    text += ", ".join(all_ex)
+    text += "\n\nДобавить: <code>/add id_биржи</code>"
+    
+    # Сообщение может быть длинным, разбиваем по 4000 символов
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            await update.message.reply_text(text[i:i+4000], parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    if not context.args:
+        enabled = get_signals_enabled(uid)
+        await update.message.reply_text(
+            f"Статус сигналов: {'✅ ВКЛ' if enabled else '❌ ВЫКЛ'}\n\n"
+            "Бот будет присылать уведомления, если найдет арбитраж выше вашего порога %.\n"
+            "Включить: /signals on\n"
+            "Выключить: /signals off"
+        )
+        return
+    
+    arg = context.args[0].lower()
+    if arg == "on":
+        set_signals_enabled(uid, True)
+        await update.message.reply_text("✅ Сигналы включены! Бот будет искать арбитраж в фоне.")
+    elif arg == "off":
+        set_signals_enabled(uid, False)
+        await update.message.reply_text("❌ Сигналы выключены.")
+    else:
+        await update.message.reply_text("Используйте: /signals on или /signals off")
+
+
+async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Фоновая задача для рассылки сигналов."""
+    users = get_all_users_with_signals()
+    if not users:
+        return
+
+    logger.info("Фоновый скан сигналов...")
+    try:
+        # 1. Скан арбитража (стандартный набор бирж)
+        new_items = await get_new_signals(SCAN_COINS, DEFAULT_EXCHANGES, 0.1)
+        
+        # 2. Скан скачков цены (Binance)
+        jumps = await get_price_jumps(SCAN_COINS, threshold_pct=2.5) # Порог 2.5%
+        
+        for uid in users:
+            user_min = get_min_arb_pct(uid)
+            
+            # Собираем сообщение для пользователя
+            messages = []
+            
+            # Добавляем арбитраж
+            user_items = [item for item in new_items if item[2] >= user_min]
+            if user_items:
+                messages.append("🔔 <b>Авто-сигнал арбитража!</b>\n" + format_top_arbitrage(user_items, user_min))
+            
+            # Добавляем скачки
+            if jumps:
+                jump_text = "🚀 <b>Резкие изменения (Binance):</b>\n"
+                for base, change, price in jumps:
+                    emoji = "📈" if change > 0 else "📉"
+                    jump_text += f"• {emoji} {base}: {change:+.2f}% (${price})\n"
+                messages.append(jump_text)
+            
+            if messages:
+                final_text = "\n\n".join(messages) + "\n\n<i>Отключить: /signals off</i>"
+                try:
+                    await context.bot.send_message(chat_id=uid, text=final_text, parse_mode="HTML")
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить сигнал пользователю {uid}: {e}")
+    except Exception:
+        logger.exception("Ошибка в фоновом сканере")
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -209,8 +302,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data == "minmenu":
         current = get_min_arb_pct(uid)
         await query.message.reply_text(
-            f"Мин. % для топа и подсветки.\nСейчас: {current}%",
+            f"Мин. % для топа и подсветки.\nСейчас: {current}%\n\n"
+            "Выберите из списка или нажмите кнопку ввода своего значения:",
             reply_markup=min_pct_keyboard(current),
+        )
+        return
+    if data == "min_custom":
+        await query.message.reply_text(
+            "Введите желаемый процент арбитража числом.\n"
+            "Например: 0.33 или 1.5\n\n"
+            "После ввода бот запомнит это значение."
         )
         return
     if data.startswith("min:"):
@@ -269,6 +370,22 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if action == "_menu":
         await update.message.reply_text("Меню:", reply_markup=main_menu_keyboard())
         return
+
+    # Если введено число (например, 0.33 или 1) - трактуем как настройку %
+    if re.fullmatch(r"\d+([.,]\d+)?", text):
+        try:
+            val = float(text.replace(",", "."))
+            uid = update.effective_user.id
+            set_min_arb_pct(uid, val)
+            await update.message.reply_text(
+                f"✅ Мин. арбитраж установлен: {val}%\n"
+                f"{'Показываю всё' if val <= 0 else f'В /top только выше {val}%'}",
+                reply_markup=min_pct_keyboard(val)
+            )
+            return
+        except ValueError:
+            pass
+
     if re.fullmatch(r"[A-Za-z0-9]{2,12}", text):
         await _send_prices(update, text)
 
@@ -359,6 +476,10 @@ def build_app() -> Application:
     # Добавляем обработчик завершения
     app.post_shutdown = on_shutdown
     
+    # Регистрация фоновой задачи (каждые 5 минут)
+    if app.job_queue:
+        app.job_queue.run_repeating(background_scanner_job, interval=300, first=10)
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("price", price_cmd))
@@ -367,9 +488,11 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("min", min_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("exchanges", exchanges_cmd))
+    app.add_handler(CommandHandler("all_exchanges", all_exchanges_cmd))
     app.add_handler(CommandHandler("add", add_exchange_cmd))
     app.add_handler(CommandHandler("remove", remove_exchange_cmd))
     app.add_handler(CommandHandler("reset", reset_exchanges_cmd))
+    app.add_handler(CommandHandler("signals", signals_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return app

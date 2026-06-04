@@ -15,6 +15,7 @@ REQUEST_TIMEOUT_MS = 10000
 @dataclass
 class ExchangePrice:
     exchange: str
+    symbol: str
     bid: float | None
     ask: float | None
     last: float | None
@@ -79,6 +80,7 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
         ticker = await asyncio.wait_for(ex.fetch_ticker(symbol), timeout=5.0)
         return ExchangePrice(
             exchange=exchange_id,
+            symbol=symbol,
             bid=_num(ticker.get("bid")),
             ask=_num(ticker.get("ask")),
             last=_num(ticker.get("last")),
@@ -102,6 +104,11 @@ def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str]
     
     return (profit, pct, best_ask.exchange, best_bid.exchange)
 
+# Хранение последних сигналов для предотвращения спама
+LAST_SIGNALS = {}
+# История цен для отслеживания скачков
+PRICE_HISTORY = {}
+
 async def scan_top_arbitrage(bases: list[str], exchanges: list[str], min_arb_pct: float = 0.0):
     async def _scan(base):
         symbol = f"{base}/USDT"
@@ -116,6 +123,47 @@ async def scan_top_arbitrage(bases: list[str], exchanges: list[str], min_arb_pct
     valid = [r for r in results if r]
     valid.sort(key=lambda x: x[2], reverse=True)
     return valid
+
+async def get_new_signals(bases: list[str], exchanges: list[str], min_pct: float):
+    """Ищет новые возможности для арбитража, которых не было в прошлый раз."""
+    items = await scan_top_arbitrage(bases, exchanges, min_pct)
+    new_signals = []
+    now = time.time()
+    
+    for base, profit, pct, buy_ex, sell_ex in items:
+        last_pct, last_ts = LAST_SIGNALS.get(base, (0.0, 0))
+        # Условия для отправки сигнала:
+        # 1. Арбитраж выше порога пользователя
+        # 2. Монета новая ИЛИ прошло более 15 минут ИЛИ процент вырос на 0.3%+
+        if pct >= min_pct:
+            if (now - last_ts > 900) or (pct > last_pct + 0.3):
+                new_signals.append((base, profit, pct, buy_ex, sell_ex))
+                LAST_SIGNALS[base] = (pct, now)
+                
+    return new_signals
+
+
+async def get_price_jumps(bases: list[str], threshold_pct: float = 3.0):
+    """Отслеживает резкие изменения цены на Binance."""
+    jumps = []
+    # Используем Binance как эталон для скачков цены
+    symbol_list = [f"{b}/USDT" for b in bases[:15]]
+    tasks = [_fetch_one_ccxt("binance", s) for s in symbol_list]
+    results = await asyncio.gather(*tasks)
+    
+    for p in results:
+        if not p or not p.last: continue
+        base = p.symbol.split("/")[0]
+        
+        old_price = PRICE_HISTORY.get(base)
+        if old_price:
+            change = ((p.last - old_price) / old_price) * 100
+            if abs(change) >= threshold_pct:
+                jumps.append((base, change, p.last))
+        
+        PRICE_HISTORY[base] = p.last
+            
+    return jumps
 
 def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: float = 0.0) -> str:
     if not prices: return f"❌ {symbol} не найден"
