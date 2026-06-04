@@ -17,19 +17,19 @@ PORT = int(os.getenv("PORT", "8080"))
 DATA_DIR = Path(os.getenv("DATA_DIR", ".")).resolve()
 SETTINGS_FILE = DATA_DIR / "user_data.json"
 
-# Биржи по умолчанию (если пользователь не настроил свой список)
+# Биржи, доступные в Беларуси (Binance, Bybit, OKX, MEXC, Bitget, BingX, Gate)
 DEFAULT_EXCHANGES = [
     "binance",
     "bybit",
     "okx",
-    "kraken",
-    "kucoin",
-    "gate",
     "mexc",
+    "bitget",
+    "bingx",
+    "gate",
 ]
 
 QUOTE = "USDT"
-REQUEST_TIMEOUT_MS = 25_000
+REQUEST_TIMEOUT_MS = 15_000 # 15 сек — золотая середина
 
 # Мин. % арбитража по умолчанию (0 = показывать всё)
 DEFAULT_MIN_ARB_PCT = 0.0
