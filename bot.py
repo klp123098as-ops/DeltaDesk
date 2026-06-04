@@ -477,12 +477,16 @@ async def _send_top(update: Update) -> None:
     try:
         uid = update.effective_user.id
         min_pct = get_min_arb_pct(uid)
+        
+        # Получаем биржи пользователя
         exchanges = get_user_exchanges(uid)
         
         # Сканируем расширенный список монет из конфига
         items = await scan_top_arbitrage(SCAN_COINS, exchanges, min_arb_pct=min_pct)
+        text = format_top_arbitrage(items, min_arb_pct=min_pct)
+        
         await wait.edit_text(
-            format_top_arbitrage(items, min_arb_pct=min_pct),
+            text,
             reply_markup=main_menu_keyboard(),
             parse_mode="HTML"
         )

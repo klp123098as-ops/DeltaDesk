@@ -200,8 +200,11 @@ def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: fl
             lines.append(f"   {buy_ex.upper()} → {sell_ex.upper()}")
             lines.append("") # Пустая строка только если есть арбитраж
     
-    for p in sorted(prices, key=lambda x: x.last or 0, reverse=True):
-        lines.append(f"• {p.exchange.upper()}: <code>{p.last or '?'}</code>")
+    # Сортируем: сначала самые дорогие (лучшие для продажи), потом дешевые
+    sorted_prices = sorted(prices, key=lambda x: x.last or 0, reverse=True)
+    for p in sorted_prices:
+        price_str = f"{p.last:g}" if p.last else "?"
+        lines.append(f"• {p.exchange.upper()}: <code>{price_str}</code>")
     return "\n".join(lines)
 
 def format_top_arbitrage(items: list, min_arb_pct: float) -> str:
