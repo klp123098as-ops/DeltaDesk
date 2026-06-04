@@ -112,16 +112,21 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
     return None
 
 def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str] | None:
-    valid = [p for p in prices if p.bid and p.ask]
+    # Оставляем только те, где есть цены и нормальный объем (минимум $50,000 суточного объема)
+    valid = [p for p in prices if p.bid and p.ask and (p.volume_24h or 0) > 50000]
     if len(valid) < 2: return None
     
     best_pair = None
     max_pct = -999.0
     
+    # Средняя комиссия биржи (Taker) — примерно 0.1% на покупку и 0.1% на продажу
+    # Итого на круг уходит ~0.2%
+    FEE_ESTIMATE = 0.2
+    
     # Ищем лучшую пару среди РАЗНЫХ бирж
     for i in range(len(valid)):
         for j in range(len(valid)):
-            if i == j: continue # Пропускаем одну и ту же биржу
+            if i == j: continue 
             
             ex_buy = valid[i]  # Покупаем по Ask
             ex_sell = valid[j] # Продаем по Bid
@@ -129,7 +134,8 @@ def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str]
             if ex_buy.ask <= 0: continue
             
             profit = ex_sell.bid - ex_buy.ask
-            pct = (profit / ex_buy.ask) * 100
+            # Вычитаем комиссии из процента прибыли
+            pct = ((profit / ex_buy.ask) * 100) - FEE_ESTIMATE
             
             if pct > max_pct:
                 max_pct = pct
@@ -137,10 +143,26 @@ def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str]
     
     return best_pair
 
+import aiohttp
+
 # Хранение последних сигналов для предотвращения спама
 LAST_SIGNALS = {}
 # История цен для отслеживания скачков
 PRICE_HISTORY = {}
+
+async def get_fear_greed_index() -> str:
+    """Получает индекс страха и жадности с Alternative.me"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.alternative.me/fng/") as resp:
+                data = await resp.json()
+                val = int(data["data"][0]["value"])
+                label = data["data"][0]["value_classification"]
+                
+                emoji = "😨" if val < 25 else "😰" if val < 45 else "😐" if val < 60 else "😊" if val < 75 else "🤑"
+                return f"{emoji} <b>Индекс страха и жадности: {val}/100</b> ({label})"
+    except Exception:
+        return ""
 
 async def scan_top_arbitrage(bases: list[str], exchanges: list[str], min_arb_pct: float = 0.0):
     async def _scan(base):

@@ -32,6 +32,7 @@ def _default_profile() -> dict:
         "exchanges": list(DEFAULT_EXCHANGES),
         "min_arb_pct": DEFAULT_MIN_ARB_PCT,
         "signals_enabled": False,
+        "alerts": [], # Список алертов: [{"base": "BTC", "price": 65000, "type": "above"}]
     }
 
 
@@ -43,12 +44,48 @@ def _get_profile(user_id: int) -> dict:
             "exchanges": entry,
             "min_arb_pct": DEFAULT_MIN_ARB_PCT,
             "signals_enabled": False,
+            "alerts": [],
         }
     if isinstance(entry, dict):
         profile = _default_profile()
         profile.update(entry)
         return profile
     return _default_profile()
+
+
+def get_user_alerts(user_id: int) -> list[dict]:
+    return _get_profile(user_id).get("alerts", [])
+
+
+def add_user_alert(user_id: int, base: str, price: float, alert_type: str) -> None:
+    profile = _get_profile(user_id)
+    alerts = profile.get("alerts", [])
+    alerts.append({"base": base.upper(), "price": price, "type": alert_type})
+    profile["alerts"] = alerts
+    _set_profile(user_id, profile)
+
+
+def remove_user_alert(user_id: int, index: int) -> bool:
+    profile = _get_profile(user_id)
+    alerts = profile.get("alerts", [])
+    if 0 <= index < len(alerts):
+        alerts.pop(index)
+        profile["alerts"] = alerts
+        _set_profile(user_id, profile)
+        return True
+    return False
+
+
+def get_all_users_with_alerts() -> dict[int, list[dict]]:
+    data = _load_raw()
+    result = {}
+    for uid_str, profile in data.items():
+        if isinstance(profile, dict) and profile.get("alerts"):
+            try:
+                result[int(uid_str)] = profile["alerts"]
+            except ValueError:
+                continue
+    return result
 
 
 def _set_profile(user_id: int, profile: dict) -> None:

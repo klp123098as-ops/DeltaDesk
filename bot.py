@@ -39,6 +39,7 @@ from market import (
     scan_top_arbitrage,
     get_new_signals,
     get_price_jumps,
+    get_fear_greed_index,
     symbol_base,
     close_all_exchanges,
 )
@@ -54,6 +55,10 @@ from user_settings import (
     get_all_users_with_signals,
     get_signals_enabled,
     set_signals_enabled,
+    add_user_alert,
+    get_all_users_with_alerts,
+    get_user_alerts,
+    remove_user_alert,
 )
 
 logging.basicConfig(
@@ -226,32 +231,96 @@ async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Используйте: /signals on или /signals off")
 
 
-async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Фоновая задача для рассылки сигналов."""
-    users = get_all_users_with_signals()
-    if not users:
+async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    if not context.args or len(context.args) < 2:
+        alerts = get_user_alerts(uid)
+        text = "🔔 <b>Ваши уведомления по цене:</b>\n\n"
+        if not alerts:
+            text += "Список пуст."
+        else:
+            for i, a in enumerate(alerts):
+                text += f"{i}. {a['base']} {'выше' if a['type'] == 'above' else 'ниже'} {a['price']}\n"
+            text += "\nУдалить: <code>/alert_del номер</code>"
+        
+        text += "\n\nДобавить: <code>/alert BTC 65000</code>"
+        await update.message.reply_text(text, parse_mode="HTML")
         return
 
-    logger.info("Фоновый скан сигналов...")
     try:
-        # 1. Скан арбитража (стандартный набор бирж)
-        new_items = await get_new_signals(SCAN_COINS, DEFAULT_EXCHANGES, 0.1)
+        base = context.args[0].upper()
+        target_price = float(context.args[1].replace(",", "."))
         
-        # 2. Скан скачков цены (Binance)
-        jumps = await get_price_jumps(SCAN_COINS, threshold_pct=2.5) # Порог 2.5%
+        # Получаем текущую цену для определения типа (выше/ниже)
+        prices = await fetch_prices(f"{base}/USDT", ["binance"])
+        if not prices or not prices[0].last:
+            await update.message.reply_text(f"❌ Не удалось получить цену {base} для настройки.")
+            return
         
-        for uid in users:
+        current = prices[0].last
+        alert_type = "above" if target_price > current else "below"
+        
+        add_user_alert(uid, base, target_price, alert_type)
+        await update.message.reply_text(
+            f"✅ Уведомление создано!\n"
+            f"Пришлю сообщение, когда {base} будет {'выше' if alert_type == 'above' else 'ниже'} {target_price}$"
+        )
+    except Exception:
+        await update.message.reply_text("Пример: <code>/alert BTC 65000</code>", parse_mode="HTML")
+
+
+async def alert_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Укажите номер алерты из списка /alert")
+        return
+    try:
+        idx = int(context.args[0])
+        if remove_user_alert(update.effective_user.id, idx):
+            await update.message.reply_text("✅ Удалено.")
+        else:
+            await update.message.reply_text("❌ Неверный номер.")
+    except Exception:
+        await update.message.reply_text("Пример: /alert_del 0")
+
+
+async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Фоновая задача для рассылки сигналов и алертов."""
+    users_signals = get_all_users_with_signals()
+    users_alerts = get_all_users_with_alerts()
+    
+    if not users_signals and not users_alerts:
+        return
+
+    logger.info("Фоновый скан...")
+    try:
+        # 1. Скан арбитража (если есть пользователи)
+        new_items = []
+        if users_signals:
+            new_items = await get_new_signals(SCAN_COINS, DEFAULT_EXCHANGES, 0.1)
+        
+        # 2. Скан скачков цены
+        jumps = await get_price_jumps(SCAN_COINS, threshold_pct=2.5)
+        
+        # 3. Скан алертов (по всем монетам из алертов)
+        all_alert_bases = set()
+        for alerts in users_alerts.values():
+            for a in alerts:
+                all_alert_bases.add(a["base"])
+        
+        current_prices = {}
+        if all_alert_bases:
+            for base in all_alert_bases:
+                p = await fetch_prices(f"{base}/USDT", ["binance"])
+                if p and p[0].last:
+                    current_prices[base] = p[0].last
+
+        # Рассылка сигналов арбитража
+        for uid in users_signals:
             user_min = get_min_arb_pct(uid)
-            
-            # Собираем сообщение для пользователя
             messages = []
-            
-            # Добавляем арбитраж
             user_items = [item for item in new_items if item[2] >= user_min]
             if user_items:
                 messages.append("🔔 <b>Авто-сигнал арбитража!</b>\n" + format_top_arbitrage(user_items, user_min))
-            
-            # Добавляем скачки
             if jumps:
                 jump_text = "🚀 <b>Резкие изменения (Binance):</b>\n"
                 for base, change, price in jumps:
@@ -263,8 +332,27 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 final_text = "\n\n".join(messages) + "\n\n<i>Отключить: /signals off</i>"
                 try:
                     await context.bot.send_message(chat_id=uid, text=final_text, parse_mode="HTML")
-                except Exception as e:
-                    logger.warning(f"Не удалось отправить сигнал пользователю {uid}: {e}")
+                except Exception: pass
+
+        # Рассылка алертов по цене
+        for uid, alerts in users_alerts.items():
+            for i, a in enumerate(alerts):
+                base = a["base"]
+                if base in current_prices:
+                    curr = current_prices[base]
+                    triggered = False
+                    if a["type"] == "above" and curr >= a["price"]:
+                        triggered = True
+                    elif a["type"] == "below" and curr <= a["price"]:
+                        triggered = True
+                    
+                    if triggered:
+                        text = f"🚨 <b>ALERT: {base} достиг цели!</b>\n\nТекущая цена: <b>{curr}$</b>\nВаша цель: {a['price']}$"
+                        try:
+                            await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+                            remove_user_alert(uid, i) # Удаляем после срабатывания
+                        except Exception: pass
+                        
     except Exception:
         logger.exception("Ошибка в фоновом сканере")
 
@@ -461,9 +549,16 @@ async def _send_analysis(update: Update, coin: str, edit: bool = False) -> None:
     try:
         symbol = normalize_symbol(coin)
         exchanges = get_user_exchanges(update.effective_user.id)
-        text = await analyze_symbol(symbol, exchanges)
+        
+        # Получаем тех.анализ
+        analysis_text = await analyze_symbol(symbol, exchanges)
+        
+        # Добавляем индекс страха и жадности
+        fng_text = await get_fear_greed_index()
+        
+        final_text = f"{analysis_text}\n\n{fng_text}"
         base = symbol_base(symbol)
-        await wait.edit_text(text, reply_markup=price_actions_keyboard(base), parse_mode="HTML")
+        await wait.edit_text(final_text, reply_markup=price_actions_keyboard(base), parse_mode="HTML")
     except ValueError as exc:
         await wait.edit_text(str(exc))
     except Exception:
@@ -504,23 +599,20 @@ async def post_init(application: Application) -> None:
     try:
         commands = [
             BotCommand("start", "Запустить бота"),
-            BotCommand("price", "Узнать цену (напр. /price BTC)"),
-            BotCommand("top", "Топ арбитражных связок"),
-            BotCommand("signals", "Настройка авто-сигналов (on/off)"),
-            BotCommand("min", "Установить мин. % (напр. /min 0.3)"),
-            BotCommand("exchanges", "Ваши выбранные биржи"),
-            BotCommand("all_exchanges", "Список всех доступных бирж"),
-            BotCommand("add", "Добавить биржу (напр. /add bybit)"),
+            BotCommand("price", "Цена (напр. /price BTC)"),
+            BotCommand("top", "Топ арбитража"),
+            BotCommand("alert", "Уведомление по цене (напр. /alert BTC 65000)"),
+            BotCommand("signals", "Авто-сигналы (on/off)"),
+            BotCommand("min", "Мин. % (напр. /min 0.3)"),
+            BotCommand("exchanges", "Мои биржи"),
+            BotCommand("all_exchanges", "Все биржи"),
+            BotCommand("add", "Добавить биржу"),
             BotCommand("remove", "Удалить биржу"),
-            BotCommand("analyze", "Тех. анализ монеты"),
-            BotCommand("help", "Справка по командам"),
+            BotCommand("analyze", "Анализ + Индекс Страха"),
+            BotCommand("help", "Справка"),
         ]
-        # Явно устанавливаем команды для всех пользователей
         await application.bot.set_my_commands(commands)
-        # Также пробуем удалить старые команды, если они мешают
-        # await application.bot.delete_my_commands() 
-        # await application.bot.set_my_commands(commands)
-        logger.info("Подсказки команд успешно установлены в Telegram")
+        logger.info("Подсказки команд успешно установлены")
     except Exception as e:
         logger.error(f"Ошибка при установке команд: {e}")
 
@@ -529,9 +621,9 @@ def build_app() -> Application:
     # Добавляем обработчик завершения
     app.post_shutdown = on_shutdown
     
-    # Регистрация фоновой задачи (каждые 5 минут)
+    # Регистрация фоновой задачи (каждые 3 минуты для алертов)
     if app.job_queue:
-        app.job_queue.run_repeating(background_scanner_job, interval=300, first=10)
+        app.job_queue.run_repeating(background_scanner_job, interval=180, first=10)
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -539,6 +631,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("analyze", analyze_cmd))
     app.add_handler(CommandHandler("top", top_cmd))
     app.add_handler(CommandHandler("min", min_cmd))
+    app.add_handler(CommandHandler("alert", alert_cmd))
+    app.add_handler(CommandHandler("alert_del", alert_del_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("exchanges", exchanges_cmd))
     app.add_handler(CommandHandler("all_exchanges", all_exchanges_cmd))
