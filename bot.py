@@ -484,21 +484,28 @@ async def on_shutdown(app: Application) -> None:
 
 async def post_init(application: Application) -> None:
     """Действия после запуска бота: настройка подсказок команд."""
-    commands = [
-        BotCommand("start", "Запустить бота"),
-        BotCommand("price", "Узнать цену (напр. /price BTC)"),
-        BotCommand("top", "Топ арбитражных связок"),
-        BotCommand("signals", "Настройка авто-сигналов (on/off)"),
-        BotCommand("min", "Установить мин. % (напр. /min 0.3)"),
-        BotCommand("exchanges", "Ваши выбранные биржи"),
-        BotCommand("all_exchanges", "Список всех доступных бирж"),
-        BotCommand("add", "Добавить биржу (напр. /add bybit)"),
-        BotCommand("remove", "Удалить биржу"),
-        BotCommand("analyze", "Тех. анализ монеты"),
-        BotCommand("help", "Справка по командам"),
-    ]
-    await application.bot.set_my_commands(commands)
-    logger.info("Подсказки команд установлены")
+    try:
+        commands = [
+            BotCommand("start", "Запустить бота"),
+            BotCommand("price", "Узнать цену (напр. /price BTC)"),
+            BotCommand("top", "Топ арбитражных связок"),
+            BotCommand("signals", "Настройка авто-сигналов (on/off)"),
+            BotCommand("min", "Установить мин. % (напр. /min 0.3)"),
+            BotCommand("exchanges", "Ваши выбранные биржи"),
+            BotCommand("all_exchanges", "Список всех доступных бирж"),
+            BotCommand("add", "Добавить биржу (напр. /add bybit)"),
+            BotCommand("remove", "Удалить биржу"),
+            BotCommand("analyze", "Тех. анализ монеты"),
+            BotCommand("help", "Справка по командам"),
+        ]
+        # Явно устанавливаем команды для всех пользователей
+        await application.bot.set_my_commands(commands)
+        # Также пробуем удалить старые команды, если они мешают
+        # await application.bot.delete_my_commands() 
+        # await application.bot.set_my_commands(commands)
+        logger.info("Подсказки команд успешно установлены в Telegram")
+    except Exception as e:
+        logger.error(f"Ошибка при установке команд: {e}")
 
 def build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()

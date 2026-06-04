@@ -69,15 +69,22 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
 
     try:
         # Загрузка рынков с кешем
-        cached, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
-        if not cached or (now - ts > MARKET_CACHE_TTL):
-            await asyncio.wait_for(ex.load_markets(), timeout=10.0)
+        cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
+        if not cached_markets or (now - ts > MARKET_CACHE_TTL):
+            await asyncio.wait_for(ex.load_markets(), timeout=15.0)
             MARKETS_CACHE[exchange_id] = (ex.markets, now)
+            cached_markets = ex.markets
 
-        if symbol not in ex.markets:
-            return None
+        # Проверяем символ в загруженных рынках
+        if symbol not in cached_markets:
+            # Попробуем найти символ без слеша, если не нашли со слешем
+            alt_symbol = symbol.replace("/", "")
+            if alt_symbol in cached_markets:
+                symbol = alt_symbol
+            else:
+                return None
 
-        ticker = await asyncio.wait_for(ex.fetch_ticker(symbol), timeout=5.0)
+        ticker = await asyncio.wait_for(ex.fetch_ticker(symbol), timeout=10.0)
         return ExchangePrice(
             exchange=exchange_id,
             symbol=symbol,
@@ -87,8 +94,9 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
             volume_24h=_num(ticker.get("quoteVolume")),
             change_24h_pct=_num(ticker.get("percentage")),
         )
-    except Exception:
-        FAILED_EXCHANGES[exchange_id] = now
+    except Exception as e:
+        logger.warning(f"Ошибка {exchange_id} для {symbol}: {e}")
+        # Не добавляем в FAILED сразу, если это просто таймаут одной монеты
         return None
 
 def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str] | None:
