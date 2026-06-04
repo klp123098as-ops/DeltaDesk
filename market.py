@@ -194,29 +194,30 @@ def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: fl
     
     if arb:
         profit, pct, buy_ex, sell_ex = arb
-        # Подсвечиваем, если выше порога или если выбран режим "Все%" (0)
-        if pct >= min_arb_pct or min_arb_pct <= 0:
+        # Показываем арбитраж ТОЛЬКО если он положительный (> 0.01%)
+        if pct > 0.01:
             lines.append(f"🟢 Арбитраж: <b>{pct:.2f}%</b>")
             lines.append(f"   {buy_ex.upper()} → {sell_ex.upper()}")
+            lines.append("") # Пустая строка только если есть арбитраж
     
-    lines.append("")
     for p in sorted(prices, key=lambda x: x.last or 0, reverse=True):
-        lines.append(f"• {p.exchange.upper()}: {p.last or '?'}")
+        lines.append(f"• {p.exchange.upper()}: <code>{p.last or '?'}</code>")
     return "\n".join(lines)
 
 def format_top_arbitrage(items: list, min_arb_pct: float) -> str:
     if not items: return "Ничего не найдено"
-    lines = ["📊 <b>Топ арбитраж</b>", ""]
     
-    # Фильтруем совсем мусорные значения (ниже -0.5%), если порог 0
-    display_items = items
-    if min_arb_pct <= 0:
-        display_items = [it for it in items if it[2] > -0.5]
+    # Оставляем только РЕАЛЬНО выгодные связки (> 0.01%)
+    # Если пользователь сам поставил порог выше (например 0.33), используем его
+    threshold = max(0.01, min_arb_pct)
+    display_items = [it for it in items if it[2] >= threshold]
 
-    if not display_items: return "Ничего интересного не найдено"
+    if not display_items: 
+        return "📊 <b>Топ арбитраж</b>\n\nВыгодных связок прямо сейчас нет. Попробуйте позже или добавьте больше бирж."
 
+    lines = ["📊 <b>Топ арбитраж</b>", ""]
     for base, profit, pct, buy_ex, sell_ex in display_items:
-        lines.append(f"• <b>{base}</b>: {pct:.2f}% ({buy_ex.upper()} → {sell_ex.upper()})")
+        lines.append(f"• <b>{base}</b>: <code>{pct:.2f}%</code> ({buy_ex.upper()} → {sell_ex.upper()})")
     return "\n".join(lines)
 
 def normalize_symbol(text: str) -> str:
