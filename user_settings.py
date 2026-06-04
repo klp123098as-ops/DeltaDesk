@@ -5,19 +5,49 @@ from pathlib import Path
 
 import ccxt.async_support as ccxt
 
-from config import DEFAULT_EXCHANGES, DEFAULT_MIN_ARB_PCT, SETTINGS_FILE
+from config import DEFAULT_EXCHANGES, DEFAULT_MIN_ARB_PCT, SETTINGS_FILE, ADMIN_ID
 
 # Динамически получаем список всех бирж, которые поддерживает библиотека ccxt
 AVAILABLE_EXCHANGES = set(ccxt.exchanges)
 
 def _load_raw() -> dict:
     if not SETTINGS_FILE.exists():
-        return {}
+        return {"whitelist": [ADMIN_ID] if ADMIN_ID else []}
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if "whitelist" not in data:
+            data["whitelist"] = [ADMIN_ID] if ADMIN_ID else []
+        return data
     except (json.JSONDecodeError, OSError):
-        return {}
+        return {"whitelist": [ADMIN_ID] if ADMIN_ID else []}
+
+
+def is_user_allowed(user_id: int) -> bool:
+    if not ADMIN_ID: return True # Если админ не задан, пускаем всех
+    if user_id == ADMIN_ID: return True
+    return user_id in _load_raw().get("whitelist", [])
+
+
+def add_to_whitelist(user_id: int) -> None:
+    data = _load_raw()
+    wl = data.get("whitelist", [])
+    if user_id not in wl:
+        wl.append(user_id)
+        data["whitelist"] = wl
+        _save_raw(data)
+
+
+def remove_from_whitelist(user_id: int) -> None:
+    data = _load_raw()
+    wl = data.get("whitelist", [])
+    if user_id in wl:
+        wl = [u for u in wl if u != user_id]
+        data["whitelist"] = wl
+        _save_raw(data)
+
+
+def get_whitelist() -> list[int]:
+    return _load_raw().get("whitelist", [])
 
 
 def _save_raw(data: dict) -> None:

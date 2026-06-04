@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 from analysis import analyze_symbol
-from config import BOT_TOKEN, PORT, WEBHOOK_SECRET, WEBHOOK_URL, SCAN_COINS, DEFAULT_EXCHANGES
+from config import BOT_TOKEN, PORT, WEBHOOK_SECRET, WEBHOOK_URL, SCAN_COINS, DEFAULT_EXCHANGES, ADMIN_ID
 from keyboards import (
     BTN_EX,
     BTN_HELP,
@@ -59,6 +59,10 @@ from user_settings import (
     get_all_users_with_alerts,
     get_user_alerts,
     remove_user_alert,
+    is_user_allowed,
+    add_to_whitelist,
+    remove_from_whitelist,
+    get_whitelist,
 )
 
 logging.basicConfig(
@@ -99,6 +103,15 @@ HELP_TEXT = """
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    if not is_user_allowed(uid):
+        await update.message.reply_text(
+            f"⛔️ Доступ ограничен.\n\nВаш ID: <code>{uid}</code>\n"
+            "Передайте этот ID владельцу бота для получения доступа.",
+            parse_mode="HTML"
+        )
+        return
+
     await update.message.reply_text(
         "Привет! Сравниваю цены на биржах и ищу арбитраж.\n\n" + HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
@@ -107,6 +120,51 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Быстрый доступ — кнопки ниже 👇",
         reply_markup=main_menu_keyboard(),
     )
+
+
+async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда для админа: добавить пользователя в белый список."""
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args:
+        await update.message.reply_text("Пример: /allow 12345678")
+        return
+    try:
+        target_id = int(context.args[0])
+        add_to_whitelist(target_id)
+        await update.message.reply_text(f"✅ Пользователь {target_id} добавлен в белый список.")
+        # Пробуем уведомить пользователя
+        try:
+            await context.bot.send_message(chat_id=target_id, text="🎉 Вам предоставлен доступ к боту! Напишите /start")
+        except Exception: pass
+    except ValueError:
+        await update.message.reply_text("ID должен быть числом.")
+
+
+async def deny_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда для админа: удалить пользователя из белого списка."""
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args:
+        await update.message.reply_text("Пример: /deny 12345678")
+        return
+    try:
+        target_id = int(context.args[0])
+        if target_id == ADMIN_ID:
+            await update.message.reply_text("Нельзя удалить самого себя.")
+            return
+        remove_from_whitelist(target_id)
+        await update.message.reply_text(f"❌ Пользователь {target_id} удален из белого списка.")
+    except ValueError:
+        await update.message.reply_text("ID должен быть числом.")
+
+
+async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда для админа: список всех допущенных."""
+    if update.effective_user.id != ADMIN_ID: return
+    wl = get_whitelist()
+    text = "👥 <b>Белый список:</b>\n\n"
+    for uid in wl:
+        text += f"• <code>{uid}</code>\n"
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -359,10 +417,14 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    uid = update.effective_user.id
+    
+    if not is_user_allowed(uid):
+        await query.answer("Доступ ограничен", show_alert=True)
+        return
+
     await query.answer()
     data = query.data or ""
-
-    uid = update.effective_user.id
 
     if data == "menu":
         await query.message.reply_text("Меню:", reply_markup=main_menu_keyboard())
@@ -455,6 +517,10 @@ PANEL_ACTIONS = {
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    if not is_user_allowed(uid):
+        return
+
     text = (update.message.text or "").strip()
     action = PANEL_ACTIONS.get(text)
     if action == "_top":
@@ -640,6 +706,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("remove", remove_exchange_cmd))
     app.add_handler(CommandHandler("reset", reset_exchanges_cmd))
     app.add_handler(CommandHandler("signals", signals_cmd))
+    app.add_handler(CommandHandler("allow", allow_cmd))
+    app.add_handler(CommandHandler("deny", deny_cmd))
+    app.add_handler(CommandHandler("whitelist", whitelist_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return app

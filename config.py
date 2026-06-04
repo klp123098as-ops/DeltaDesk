@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # Облако: если задан WEBHOOK_URL — режим webhook (Render и т.п.)
 # Локально и на Fly.io — оставьте пустым (режим polling)
