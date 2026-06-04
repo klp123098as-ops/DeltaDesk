@@ -426,7 +426,7 @@ async def _send_prices(update: Update, coin: str, edit: bool = False) -> None:
         rows = await fetch_prices(symbol, exchanges)
         text = format_price_table(symbol, rows, min_arb_pct=min_pct)
         kb = price_actions_keyboard(base)
-        await wait.edit_text(text, reply_markup=kb)
+        await wait.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except ValueError as exc:
         await wait.edit_text(str(exc))
     except Exception:
@@ -450,7 +450,7 @@ async def _send_analysis(update: Update, coin: str, edit: bool = False) -> None:
         exchanges = get_user_exchanges(update.effective_user.id)
         text = await analyze_symbol(symbol, exchanges)
         base = symbol_base(symbol)
-        await wait.edit_text(text, reply_markup=price_actions_keyboard(base))
+        await wait.edit_text(text, reply_markup=price_actions_keyboard(base), parse_mode="HTML")
     except ValueError as exc:
         await wait.edit_text(str(exc))
     except Exception:
@@ -471,6 +471,7 @@ async def _send_top(update: Update) -> None:
         await wait.edit_text(
             format_top_arbitrage(items, min_arb_pct=min_pct),
             reply_markup=main_menu_keyboard(),
+            parse_mode="HTML"
         )
     except Exception:
         logger.exception("top error")

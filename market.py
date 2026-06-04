@@ -95,14 +95,27 @@ def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str]
     valid = [p for p in prices if p.bid and p.ask]
     if len(valid) < 2: return None
     
-    best_bid = max(valid, key=lambda x: x.bid)
-    best_ask = min(valid, key=lambda x: x.ask)
+    best_pair = None
+    max_pct = -999.0
     
-    if best_ask.ask <= 0: return None
-    profit = best_bid.bid - best_ask.ask
-    pct = (profit / best_ask.ask) * 100
+    # Ищем лучшую пару среди РАЗНЫХ бирж
+    for i in range(len(valid)):
+        for j in range(len(valid)):
+            if i == j: continue # Пропускаем одну и ту же биржу
+            
+            ex_buy = valid[i]  # Покупаем по Ask
+            ex_sell = valid[j] # Продаем по Bid
+            
+            if ex_buy.ask <= 0: continue
+            
+            profit = ex_sell.bid - ex_buy.ask
+            pct = (profit / ex_buy.ask) * 100
+            
+            if pct > max_pct:
+                max_pct = pct
+                best_pair = (profit, pct, ex_buy.exchange, ex_sell.exchange)
     
-    return (profit, pct, best_ask.exchange, best_bid.exchange)
+    return best_pair
 
 # Хранение последних сигналов для предотвращения спама
 LAST_SIGNALS = {}
@@ -186,7 +199,15 @@ def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: fl
 def format_top_arbitrage(items: list, min_arb_pct: float) -> str:
     if not items: return "Ничего не найдено"
     lines = ["📊 <b>Топ арбитраж</b>", ""]
-    for base, profit, pct, buy_ex, sell_ex in items:
+    
+    # Фильтруем совсем мусорные значения (ниже -0.5%), если порог 0
+    display_items = items
+    if min_arb_pct <= 0:
+        display_items = [it for it in items if it[2] > -0.5]
+
+    if not display_items: return "Ничего интересного не найдено"
+
+    for base, profit, pct, buy_ex, sell_ex in display_items:
         lines.append(f"• <b>{base}</b>: {pct:.2f}% ({buy_ex.upper()} → {sell_ex.upper()})")
     return "\n".join(lines)
 

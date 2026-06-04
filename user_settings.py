@@ -31,6 +31,7 @@ def _default_profile() -> dict:
     return {
         "exchanges": list(DEFAULT_EXCHANGES),
         "min_arb_pct": DEFAULT_MIN_ARB_PCT,
+        "signals_enabled": False,
     }
 
 
@@ -38,7 +39,11 @@ def _get_profile(user_id: int) -> dict:
     key = str(user_id)
     entry = _load_raw().get(key)
     if isinstance(entry, list):
-        return {"exchanges": entry, "min_arb_pct": DEFAULT_MIN_ARB_PCT}
+        return {
+            "exchanges": entry,
+            "min_arb_pct": DEFAULT_MIN_ARB_PCT,
+            "signals_enabled": False,
+        }
     if isinstance(entry, dict):
         profile = _default_profile()
         profile.update(entry)
@@ -84,6 +89,28 @@ def set_min_arb_pct(user_id: int, pct: float) -> None:
     _set_profile(user_id, profile)
 
 
+def get_signals_enabled(user_id: int) -> bool:
+    return bool(_get_profile(user_id).get("signals_enabled", False))
+
+
+def set_signals_enabled(user_id: int, enabled: bool) -> None:
+    profile = _get_profile(user_id)
+    profile["signals_enabled"] = enabled
+    _set_profile(user_id, profile)
+
+
+def get_all_users_with_signals() -> list[int]:
+    data = _load_raw()
+    users = []
+    for uid_str, profile in data.items():
+        if isinstance(profile, dict) and profile.get("signals_enabled"):
+            try:
+                users.append(int(uid_str))
+            except ValueError:
+                continue
+    return users
+
+
 def add_user_exchange(user_id: int, exchange_id: str) -> tuple[bool, str]:
     name = exchange_id.strip().lower()
     if not is_valid_exchange(name):
@@ -123,17 +150,23 @@ def reset_user_exchanges(user_id: int) -> str:
 def format_user_settings(user_id: int) -> str:
     ex = get_user_exchanges(user_id)
     min_pct = get_min_arb_pct(user_id)
+    signals = get_signals_enabled(user_id)
+    
     min_line = (
         f"Мин. арбитраж: {min_pct}% (показывать всё)"
         if min_pct <= 0
         else f"Мин. арбитраж: {min_pct}% (топ и подсветка)"
     )
+    sig_line = "Сигналы (авто-скан): " + ("✅ ВКЛ" if signals else "❌ ВЫКЛ")
+    
     return (
         f"⚙️ Ваши настройки\n\n"
         f"• Биржи ({len(ex)}): {_fmt_list(ex)}\n"
-        f"• {min_line}\n\n"
+        f"• {min_line}\n"
+        f"• {sig_line}\n\n"
         f"Изменить мин: /min 0.05\n"
-        f"Сброс мин: /min 0"
+        f"Сигналы: /signals on/off\n"
+        f"Биржи: /exchanges"
     )
 
 
