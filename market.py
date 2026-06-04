@@ -81,28 +81,55 @@ async def get_exchange_instance(exchange_id: str) -> ccxt.Exchange | None:
     EXCHANGES_INSTANCES[exchange_id] = instance
     return instance
 
-async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None:
+# Глобальный кеш инстансов бирж для "Турбо-режима"
+EXCHANGES_INSTANCES: dict[str, ccxt.Exchange] = {}
+
+# Блокировка для предотвращения одновременной загрузки рынков одной биржи
+MARKETS_LOCKS: dict[str, asyncio.Lock] = {}
+
+async def get_exchange_instance(exchange_id: str) -> ccxt.Exchange | None:
+    if exchange_id in EXCHANGES_INSTANCES:
+        return EXCHANGES_INSTANCES[exchange_id]
+    
     exchange_class = getattr(ccxt, exchange_id, None)
     if exchange_class is None:
         return None
-
-    cfg = {"enableRateLimit": True, "timeout": REQUEST_TIMEOUT_MS}
+    
+    # Настройки для максимальной скорости
+    cfg = {
+        "enableRateLimit": True, 
+        "timeout": 10000, # 10 секунд на соединение
+        "options": {"preloadMarkets": False} # НЕ грузить все рынки сразу
+    }
     cfg.update(EXCHANGE_OPTIONS.get(exchange_id, {}))
-    exchange = exchange_class(cfg)
+    instance = exchange_class(cfg)
+    EXCHANGES_INSTANCES[exchange_id] = instance
+    MARKETS_LOCKS[exchange_id] = asyncio.Lock()
+    return instance
+
+async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None:
+    exchange = await get_exchange_instance(exchange_id)
+    if not exchange:
+        return None
+
+    lock = MARKETS_LOCKS.get(exchange_id)
     
     try:
-        # Проверяем кеш рынков
-        now = time.time()
-        cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
-        
-        if not cached_markets or (now - ts > MARKET_CACHE_TTL):
-            await exchange.load_markets()
-            MARKETS_CACHE[exchange_id] = (exchange.markets, now)
+        async with lock:
+            now = time.time()
+            cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
+            
+            # Грузим рынки только если их нет или они старые
+            if not cached_markets or (now - ts > MARKET_CACHE_TTL):
+                logger.info("Гружу рынки для %s...", exchange_id)
+                await asyncio.wait_for(exchange.load_markets(), timeout=15.0)
+                MARKETS_CACHE[exchange_id] = (exchange.markets, now)
 
         if symbol not in exchange.markets:
             return None
             
-        ticker = await asyncio.wait_for(exchange.fetch_ticker(symbol), timeout=10.0)
+        # Сам запрос цены (очень быстрый)
+        ticker = await asyncio.wait_for(exchange.fetch_ticker(symbol), timeout=5.0)
         return ExchangePrice(
             exchange=exchange_id,
             bid=_num(ticker.get("bid")),
@@ -113,11 +140,9 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
             source="ccxt",
         )
     except Exception as exc:
-        logger.debug("Ошибка %s: %s", exchange_id, exc)
+        logger.debug("Биржа %s пропущена: %s", exchange_id, str(exc))
         return None
-    finally:
-        # ПРИНУДИТЕЛЬНО закрываем соединение, чтобы не было ошибок в логах
-        await exchange.close()
+    # НИКАКОГО exchange.close() здесь! Соединение должно жить.
 
 
 def _num(value) -> float | None:
