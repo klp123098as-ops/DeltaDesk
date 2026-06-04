@@ -28,7 +28,15 @@ DEFAULT_EXCHANGES = [
     "gate",
 ]
 
-QUOTE = "USDT"
+# Список монет для расширенного сканирования (Топ арбитраж)
+# Здесь популярные + волатильные альткоины, где чаще бывает разница цен
+SCAN_COINS = [
+    "BTC", "ETH", "SOL", "XRP", "DOGE", "TON", "ADA", "AVAX", "SHIB", "DOT", 
+    "LINK", "NEAR", "MATIC", "PEPE", "LTC", "ICP", "BCH", "UNI", "SUI", "APT", 
+    "OP", "ARB", "TIA", "SEI", "INJ", "RNDR", "GRT", "STX", "FIL", "ATOM", 
+    "IMX", "KAS", "WIF", "BONK", "FLOKI", "NOT", "TRX", "ETC", "XLM", "VET",
+    "THETA", "MKR", "LDO", "FET", "AGIX", "TAO", "ORDI", "1000SATS", "AAVE", "AR"
+]
 REQUEST_TIMEOUT_MS = 15_000 # 15 сек — золотая середина
 
 # Мин. % арбитража по умолчанию (0 = показывать всё)

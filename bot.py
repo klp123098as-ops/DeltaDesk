@@ -333,14 +333,14 @@ async def _send_analysis(update: Update, coin: str, edit: bool = False) -> None:
 
 async def _send_top(update: Update) -> None:
     msg = _chat(update)
-    wait = await msg.reply_text("⏳ Сканирую топ-монеты (BTC, ETH, SOL, XRP, DOGE, PEPE)...")
+    wait = await msg.reply_text(f"⏳ Глубокое сканирование ({len(SCAN_COINS)} монет)...")
     try:
         uid = update.effective_user.id
         min_pct = get_min_arb_pct(uid)
         exchanges = get_user_exchanges(uid)
-        # Ограничиваем список для скорости
-        top_coins = ["BTC", "ETH", "SOL", "XRP", "DOGE", "PEPE"]
-        items = await scan_top_arbitrage(top_coins, exchanges, min_arb_pct=min_pct)
+        
+        # Сканируем расширенный список монет из конфига
+        items = await scan_top_arbitrage(SCAN_COINS, exchanges, min_arb_pct=min_pct)
         await wait.edit_text(
             format_top_arbitrage(items, min_arb_pct=min_pct),
             reply_markup=main_menu_keyboard(),
