@@ -290,6 +290,22 @@ async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Используйте: /signals on или /signals off")
 
 
+async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда для проверки своего ID и статуса."""
+    uid = update.effective_user.id
+    is_admin = (uid == ADMIN_ID)
+    mode = "Webhook" if WEBHOOK_URL else "Polling"
+    
+    text = (
+        f"👤 <b>Ваш профиль:</b>\n\n"
+        f"• ID: <code>{uid}</code>\n"
+        f"• Статус: {'<b>АДМИНИСТРАТОР</b>' if is_admin else 'Пользователь'}\n"
+        f"• Режим бота: {mode}\n"
+        f"• Доступ: {'✅ Разрешен' if is_user_allowed(uid) else '❌ Ограничен'}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
 async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not context.args or len(context.args) < 2:
@@ -310,25 +326,31 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         base = context.args[0].upper()
         target_price = float(context.args[1].replace(",", "."))
         
-        # Пробуем получить цену с Binance или Bybit (самые стабильные)
-        prices = await fetch_prices(f"{base}/USDT", ["binance", "bybit"])
+        # Для алерта опрашиваем ВООБЩЕ ВСЕ биржи пользователя, чтобы хоть кто-то ответил
+        exchanges = get_user_exchanges(uid)
+        await update.message.reply_text(f"⏳ Проверяю цену {base} на {len(exchanges)} биржах...")
+        
+        prices = await fetch_prices(f"{base}/USDT", exchanges)
         if not prices:
-            await update.message.reply_text(f"❌ Не удалось получить цену {base}. Попробуйте еще раз через секунду.")
+            await update.message.reply_text(f"❌ Ни одна биржа не ответила. Попробуйте еще раз.")
             return
         
-        # Берем цену с первой ответившей биржи
+        # Берем среднюю цену или цену с самой быстрой биржи
         current = prices[0].last
         if not current:
-            await update.message.reply_text(f"❌ Биржа не отдала цену для {base}. Попробуйте позже.")
+            await update.message.reply_text(f"❌ Не удалось получить цену. Попробуйте позже.")
             return
 
         alert_type = "above" if target_price > current else "below"
         
         add_user_alert(uid, base, target_price, alert_type)
         await update.message.reply_text(
-            f"✅ Уведомление создано!\n"
+            f"✅ <b>Уведомление создано!</b>\n\n"
+            f"Монета: {base}\n"
             f"Текущая цена: {current}$\n"
-            f"Пришлю сообщение, когда {base} будет {'выше' if alert_type == 'above' else 'ниже'} {target_price}$"
+            f"Цель: {'выше' if alert_type == 'above' else 'ниже'} {target_price}$\n\n"
+            f"Я пришлю сообщение, как только цель будет достигнута.",
+            parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"Alert error: {e}")
