@@ -372,27 +372,28 @@ def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Нет BOT_TOKEN")
 
+    # Исправление ошибки "There is no current event loop"
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     app = build_app()
 
     if WEBHOOK_URL:
-        # Режим для Render: запускаем веб-сервер + вебхук
         logger.info("Запуск в режиме Webhook: %s", WEBHOOK_URL)
-        
-        # Создаем aiohttp приложение для health check
-        web_app = web.Application()
-        web_app.router.add_get("/", health_check)
-        
-        # Запускаем бота через webhook внутри aiohttp или встроенными средствами
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path="telegram",
             webhook_url=f"{WEBHOOK_URL}/telegram",
             secret_token=WEBHOOK_SECRET or None,
+            close_loop=False # Важно для облака
         )
     else:
         logger.info("Запуск в режиме Polling (локально)")
-        app.run_polling()
+        app.run_polling(close_loop=False)
 
 
 if __name__ == "__main__":
