@@ -44,7 +44,8 @@ async def get_exchange_instance(exchange_id: str):
     cls = getattr(ccxt, exchange_id, None)
     if not cls: return None
     
-    instance = cls({"enableRateLimit": True, "timeout": REQUEST_TIMEOUT_MS})
+    # Увеличиваем таймаут до 20 секунд для инициализации
+    instance = cls({"enableRateLimit": True, "timeout": 20000})
     EXCHANGES_INSTANCES[exchange_id] = instance
     return instance
 
@@ -60,44 +61,55 @@ async def fetch_prices(symbol: str, exchanges: list[str]) -> list[ExchangePrice]
 
 async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None:
     now = time.time()
-    if exchange_id in FAILED_EXCHANGES:
+    # Убираем блокировку FAILED_EXCHANGES для популярных бирж, чтобы всегда пробовать их
+    popular_to_retry = ["binance", "bybit", "okx", "mexc", "bitget", "gate"]
+    
+    if exchange_id in FAILED_EXCHANGES and exchange_id not in popular_to_retry:
         if now - FAILED_EXCHANGES[exchange_id] < FAILED_CACHE_TTL:
             return None
 
     ex = await get_exchange_instance(exchange_id)
     if not ex: return None
 
-    try:
-        # Загрузка рынков с кешем
-        cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
-        if not cached_markets or (now - ts > MARKET_CACHE_TTL):
-            await asyncio.wait_for(ex.load_markets(), timeout=15.0)
-            MARKETS_CACHE[exchange_id] = (ex.markets, now)
-            cached_markets = ex.markets
+    # Пробуем до 2 раз для популярных бирж
+    attempts = 2 if exchange_id in popular_to_retry else 1
+    
+    for attempt in range(attempts):
+        try:
+            # Загрузка рынков с кешем (таймаут 30 секунд!)
+            cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
+            if not cached_markets or (now - ts > MARKET_CACHE_TTL):
+                await asyncio.wait_for(ex.load_markets(), timeout=30.0)
+                MARKETS_CACHE[exchange_id] = (ex.markets, now)
+                cached_markets = ex.markets
 
-        # Проверяем символ в загруженных рынках
-        if symbol not in cached_markets:
-            # Попробуем найти символ без слеша, если не нашли со слешем
-            alt_symbol = symbol.replace("/", "")
-            if alt_symbol in cached_markets:
-                symbol = alt_symbol
+            # Проверяем символ
+            current_symbol = symbol
+            if current_symbol not in cached_markets:
+                alt = current_symbol.replace("/", "")
+                if alt in cached_markets:
+                    current_symbol = alt
+                else:
+                    return None
+
+            # Запрос тикера (таймаут 15 секунд)
+            ticker = await asyncio.wait_for(ex.fetch_ticker(current_symbol), timeout=15.0)
+            return ExchangePrice(
+                exchange=exchange_id,
+                symbol=current_symbol,
+                bid=_num(ticker.get("bid")),
+                ask=_num(ticker.get("ask")),
+                last=_num(ticker.get("last")),
+                volume_24h=_num(ticker.get("quoteVolume")),
+                change_24h_pct=_num(ticker.get("percentage")),
+            )
+        except Exception as e:
+            if attempt == attempts - 1:
+                logger.warning(f"Final failure for {exchange_id}: {e}")
+                FAILED_EXCHANGES[exchange_id] = now
             else:
-                return None
-
-        ticker = await asyncio.wait_for(ex.fetch_ticker(symbol), timeout=10.0)
-        return ExchangePrice(
-            exchange=exchange_id,
-            symbol=symbol,
-            bid=_num(ticker.get("bid")),
-            ask=_num(ticker.get("ask")),
-            last=_num(ticker.get("last")),
-            volume_24h=_num(ticker.get("quoteVolume")),
-            change_24h_pct=_num(ticker.get("percentage")),
-        )
-    except Exception as e:
-        logger.warning(f"Ошибка {exchange_id} для {symbol}: {e}")
-        # Не добавляем в FAILED сразу, если это просто таймаут одной монеты
-        return None
+                await asyncio.sleep(1) # Короткая пауза перед ретраем
+    return None
 
 def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str] | None:
     valid = [p for p in prices if p.bid and p.ask]
