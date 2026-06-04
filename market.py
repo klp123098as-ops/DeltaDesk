@@ -107,7 +107,8 @@ async def scan_top_arbitrage(bases: list[str], exchanges: list[str], min_arb_pct
         symbol = f"{base}/USDT"
         prices = await fetch_prices(symbol, exchanges)
         arb = calc_arbitrage(prices)
-        if arb and arb[1] >= min_arb_pct:
+        # Если порог 0 (Все%), показываем всё, где есть цена на 2+ биржах
+        if arb and (min_arb_pct <= 0 or arb[1] >= min_arb_pct):
             return (base, *arb)
         return None
 
@@ -124,7 +125,8 @@ def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: fl
     
     if arb:
         profit, pct, buy_ex, sell_ex = arb
-        if pct >= min_arb_pct:
+        # Подсвечиваем, если выше порога или если выбран режим "Все%" (0)
+        if pct >= min_arb_pct or min_arb_pct <= 0:
             lines.append(f"🟢 Арбитраж: <b>{pct:.2f}%</b>")
             lines.append(f"   {buy_ex.upper()} → {sell_ex.upper()}")
     
