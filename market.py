@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 import ccxt.async_support as ccxt
@@ -50,6 +51,36 @@ def symbol_base(symbol: str) -> str:
     return symbol.split("/")[0]
 
 
+# Кеш для рынков (чтобы не грузить список монет каждый раз)
+MARKETS_CACHE: dict[str, tuple[dict, float]] = {}
+MARKET_CACHE_TTL = 600  # 10 минут
+
+# Глобальный кеш инстансов бирж для переиспользования соединений
+EXCHANGES_INSTANCES: dict[str, ccxt.Exchange] = {}
+
+async def close_all_exchanges():
+    """Корректно закрывает все открытые соединения с биржами."""
+    for exchange in EXCHANGES_INSTANCES.values():
+        try:
+            await exchange.close()
+        except Exception:
+            pass
+    EXCHANGES_INSTANCES.clear()
+
+async def get_exchange_instance(exchange_id: str) -> ccxt.Exchange | None:
+    if exchange_id in EXCHANGES_INSTANCES:
+        return EXCHANGES_INSTANCES[exchange_id]
+    
+    exchange_class = getattr(ccxt, exchange_id, None)
+    if exchange_class is None:
+        return None
+    
+    cfg = {"enableRateLimit": True, "timeout": REQUEST_TIMEOUT_MS}
+    cfg.update(EXCHANGE_OPTIONS.get(exchange_id, {}))
+    instance = exchange_class(cfg)
+    EXCHANGES_INSTANCES[exchange_id] = instance
+    return instance
+
 async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None:
     exchange_class = getattr(ccxt, exchange_id, None)
     if exchange_class is None:
@@ -58,30 +89,34 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
     cfg = {"enableRateLimit": True, "timeout": REQUEST_TIMEOUT_MS}
     cfg.update(EXCHANGE_OPTIONS.get(exchange_id, {}))
     exchange = exchange_class(cfg)
+    
     try:
-        for attempt in range(2):
-            try:
-                await exchange.load_markets()
-                if symbol not in exchange.markets:
-                    return None
-                ticker = await exchange.fetch_ticker(symbol)
-                return ExchangePrice(
-                    exchange=exchange_id,
-                    bid=_num(ticker.get("bid")),
-                    ask=_num(ticker.get("ask")),
-                    last=_num(ticker.get("last")),
-                    volume_24h=_num(
-                        ticker.get("quoteVolume") or ticker.get("baseVolume")
-                    ),
-                    change_24h_pct=_num(ticker.get("percentage")),
-                    source="ccxt",
-                )
-            except Exception as exc:
-                logger.debug("%s attempt %s: %s", exchange_id, attempt + 1, exc)
-                if attempt == 0:
-                    await asyncio.sleep(0.5)
+        # Проверяем кеш рынков
+        now = time.time()
+        cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
+        
+        if not cached_markets or (now - ts > MARKET_CACHE_TTL):
+            await exchange.load_markets()
+            MARKETS_CACHE[exchange_id] = (exchange.markets, now)
+
+        if symbol not in exchange.markets:
+            return None
+            
+        ticker = await asyncio.wait_for(exchange.fetch_ticker(symbol), timeout=10.0)
+        return ExchangePrice(
+            exchange=exchange_id,
+            bid=_num(ticker.get("bid")),
+            ask=_num(ticker.get("ask")),
+            last=_num(ticker.get("last")),
+            volume_24h=_num(ticker.get("quoteVolume") or ticker.get("baseVolume")),
+            change_24h_pct=_num(ticker.get("percentage")),
+            source="ccxt",
+        )
+    except Exception as exc:
+        logger.debug("Ошибка %s: %s", exchange_id, exc)
         return None
     finally:
+        # ПРИНУДИТЕЛЬНО закрываем соединение, чтобы не было ошибок в логах
         await exchange.close()
 
 
@@ -232,19 +267,22 @@ async def scan_top_arbitrage(
     exchanges: list[str],
     min_arb_pct: float = 0.0,
 ) -> list[tuple[str, float, float, str, str]]:
-    results: list[tuple[str, float, float, str, str]] = []
-    for base in bases:
+    async def _scan_one(base: str):
         symbol = f"{base}/USDT"
         rows = await fetch_prices(symbol, exchanges)
         arb = calc_arbitrage(rows)
-        if not arb:
-            continue
-        _, pct, _, _ = arb
-        if min_arb_pct > 0 and pct < min_arb_pct:
-            continue
-        results.append((base, *arb))
-    results.sort(key=lambda x: x[2], reverse=True)
-    return results
+        if arb:
+            _, pct, _, _ = arb
+            if min_arb_pct <= 0 or pct >= min_arb_pct:
+                return (base, *arb)
+        return None
+
+    tasks = [_scan_one(base) for base in bases]
+    results = await asyncio.gather(*tasks)
+    
+    valid_results = [r for r in results if r is not None]
+    valid_results.sort(key=lambda x: x[2], reverse=True)
+    return valid_results
 
 
 def format_top_arbitrage(
