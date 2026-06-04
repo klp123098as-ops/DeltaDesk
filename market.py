@@ -44,8 +44,13 @@ async def get_exchange_instance(exchange_id: str):
     cls = getattr(ccxt, exchange_id, None)
     if not cls: return None
     
-    # Увеличиваем таймаут до 20 секунд для инициализации
-    instance = cls({"enableRateLimit": True, "timeout": 20000})
+    # Оптимизация для облака: переиспользование соединений и увеличенные таймауты
+    instance = cls({
+        "enableRateLimit": True, 
+        "timeout": 30000,
+        "aiohttp_proxy": None,
+        "options": {"defaultType": "spot"}
+    })
     EXCHANGES_INSTANCES[exchange_id] = instance
     return instance
 
@@ -71,15 +76,16 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
     ex = await get_exchange_instance(exchange_id)
     if not ex: return None
 
-    # Пробуем до 2 раз для популярных бирж
-    attempts = 2 if exchange_id in popular_to_retry else 1
+    # Пробуем до 3 раз для популярных бирж с увеличением таймаута
+    attempts = 3 if exchange_id in popular_to_retry else 1
     
     for attempt in range(attempts):
         try:
             # Загрузка рынков с кешем (таймаут 30 секунд!)
             cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
             if not cached_markets or (now - ts > MARKET_CACHE_TTL):
-                await asyncio.wait_for(ex.load_markets(), timeout=30.0)
+                # Для ретрая увеличиваем таймаут
+                await asyncio.wait_for(ex.load_markets(), timeout=(30.0 + attempt * 10))
                 MARKETS_CACHE[exchange_id] = (ex.markets, now)
                 cached_markets = ex.markets
 
@@ -92,8 +98,8 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
                 else:
                     return None
 
-            # Запрос тикера (таймаут 15 секунд)
-            ticker = await asyncio.wait_for(ex.fetch_ticker(current_symbol), timeout=15.0)
+            # Запрос тикера (таймаут 15-20 секунд)
+            ticker = await asyncio.wait_for(ex.fetch_ticker(current_symbol), timeout=(15.0 + attempt * 5))
             return ExchangePrice(
                 exchange=exchange_id,
                 symbol=current_symbol,
@@ -105,10 +111,11 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
             )
         except Exception as e:
             if attempt == attempts - 1:
-                logger.warning(f"Final failure for {exchange_id}: {e}")
+                logger.warning(f"Final failure for {exchange_id} after {attempts} attempts: {e}")
                 FAILED_EXCHANGES[exchange_id] = now
             else:
-                await asyncio.sleep(1) # Короткая пауза перед ретраем
+                # Экспоненциальная пауза перед ретраем
+                await asyncio.sleep(1 + attempt * 2)
     return None
 
 def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str] | None:

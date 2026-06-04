@@ -117,7 +117,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для админа: добавить пользователя в белый список."""
-    if update.effective_user.id != ADMIN_ID: return
+    uid = update.effective_user.id
+    logger.info(f"Admin attempt /allow by {uid}. Current ADMIN_ID is {ADMIN_ID}")
+    
+    if uid != ADMIN_ID: 
+        logger.warning(f"Unauthorized /allow attempt by {uid}")
+        return
+    
     if not context.args:
         await update.message.reply_text("Пример: /allow 12345678")
         return
@@ -125,17 +131,19 @@ async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         target_id = int(context.args[0])
         add_to_whitelist(target_id)
         await update.message.reply_text(f"✅ Пользователь {target_id} добавлен в белый список.")
-        # Пробуем уведомить пользователя
         try:
             await context.bot.send_message(chat_id=target_id, text="🎉 Вам предоставлен доступ к боту! Напишите /start")
-        except Exception: pass
+        except Exception as e:
+            logger.error(f"Could not notify user {target_id}: {e}")
     except ValueError:
         await update.message.reply_text("ID должен быть числом.")
 
 
 async def deny_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для админа: удалить пользователя из белого списка."""
-    if update.effective_user.id != ADMIN_ID: return
+    uid = update.effective_user.id
+    if uid != ADMIN_ID: return
+    
     if not context.args:
         await update.message.reply_text("Пример: /deny 12345678")
         return
