@@ -38,10 +38,9 @@ def _load_raw() -> dict:
 
 
 def is_user_allowed(user_id: int) -> bool:
-    data = _load_raw()
-    # Проверяем белый список (без учета ADMIN_ID на уровне функции)
-    wl = data.get("whitelist", [])
-    return user_id in wl
+    if not ADMIN_ID: return True # Если админ не задан, пускаем всех
+    if user_id == ADMIN_ID: return True # Админ всегда имеет доступ
+    return user_id in _load_raw().get("whitelist", [])
 
 
 def add_to_whitelist(user_id: int) -> None:
@@ -51,6 +50,29 @@ def add_to_whitelist(user_id: int) -> None:
         wl.append(user_id)
         data["whitelist"] = wl
         _save_raw(data)
+
+
+def save_user_info(user_id: int, first_name: str = "", username: str = "") -> None:
+    """Сохраняет информацию о пользователе (имя, ник)."""
+    data = _load_raw()
+    if "user_info" not in data:
+        data["user_info"] = {}
+
+    data["user_info"][str(user_id)] = {
+        "first_name": first_name,
+        "username": username,
+    }
+    _save_raw(data)
+
+
+def get_user_info(user_id: int) -> dict:
+    """Получает сохраненную информацию о пользователе."""
+    data = _load_raw()
+    user_info = data.get("user_info", {}).get(str(user_id), {})
+    return {
+        "first_name": user_info.get("first_name", ""),
+        "username": user_info.get("username", ""),
+    }
 
 
 def remove_from_whitelist(user_id: int) -> None:

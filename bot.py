@@ -63,6 +63,8 @@ from user_settings import (
     add_to_whitelist,
     remove_from_whitelist,
     get_whitelist,
+    save_user_info,
+    get_user_info,
 )
 
 logging.basicConfig(
@@ -97,6 +99,11 @@ HELP_TEXT = """
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
+    user = update.effective_user
+
+    # Сохраняем информацию о пользователе
+    save_user_info(uid, first_name=user.first_name or "", username=user.username or "")
+
     if not is_user_allowed(uid):
         await update.message.reply_text(
             f"⛔️ Доступ ограничен.\n\nВаш ID: <code>{uid}</code>\n"
@@ -199,7 +206,18 @@ async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         else:
             for user_id in wl:
                 is_admin = "👑" if user_id == ADMIN_ID else ""
-                text += f"• <code>{user_id}</code> {is_admin}\n"
+                info = get_user_info(user_id)
+                first_name = info.get("first_name", "")
+                username = info.get("username", "")
+
+                # Формируем строку с информацией
+                user_display = f"<code>{user_id}</code>"
+                if first_name:
+                    user_display += f" • {first_name}"
+                if username:
+                    user_display += f" (@{username})"
+
+                text += f"• {user_display} {is_admin}\n"
         await update.message.reply_text(text, parse_mode="HTML")
     except Exception as e:
         logger.exception(f"Error in whitelist_cmd: {e}")
@@ -610,6 +628,11 @@ PANEL_ACTIONS = {
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
+    user = update.effective_user
+
+    # Обновляем информацию о пользователе при каждом контакте
+    save_user_info(uid, first_name=user.first_name or "", username=user.username or "")
+
     if not is_user_allowed(uid):
         return
 
