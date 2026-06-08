@@ -73,6 +73,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def require_access(func):
+    """Декоратор: блокирует команду, если пользователь не в whitelist."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if user is None:
+            return
+        uid = user.id
+        # Обновим инфо о пользователе на всякий случай
+        try:
+            save_user_info(uid, first_name=user.first_name or "", username=user.username or "")
+        except Exception:
+            pass
+        if not is_user_allowed(uid):
+            msg = update.effective_message
+            if msg is not None:
+                await msg.reply_text(
+                    f"⛔️ Доступ ограничен.\n\nВаш ID: <code>{uid}</code>\n"
+                    "Передайте этот ID владельцу бота для получения доступа.",
+                    parse_mode="HTML",
+                )
+            return
+        return await func(update, context)
+    wrapper.__name__ = func.__name__
+    return wrapper
+
 HELP_TEXT = """
 🤖 <b>DeltaDesk — твой крипто-сканер</b>
 
@@ -115,6 +141,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! Сравниваю цены на биржах и ищу арбитраж.\n\n" + HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
+        parse_mode="HTML",
     )
     await update.message.reply_text(
         "Быстрый доступ — кнопки ниже 👇",
@@ -224,14 +251,17 @@ async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@require_access
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
+        parse_mode="HTML",
     )
     await update.message.reply_text("Меню:", reply_markup=main_menu_keyboard())
 
 
+@require_access
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if not context.args:
@@ -246,6 +276,7 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@require_access
 async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Пример: /analyze BTC")
@@ -253,10 +284,12 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _send_analysis(update, " ".join(context.args))
 
 
+@require_access
 async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_top(update)
 
 
+@require_access
 async def min_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not context.args:
@@ -281,14 +314,17 @@ async def min_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+@require_access
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     await update.message.reply_text(
         format_user_settings(uid),
         reply_markup=min_pct_keyboard(get_min_arb_pct(uid)),
+        parse_mode="HTML",
     )
 
 
+@require_access
 async def exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     mine = get_user_exchanges(uid)
@@ -301,6 +337,7 @@ async def exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+@require_access
 async def add_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Пример: /add binance")
@@ -309,6 +346,7 @@ async def add_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(msg)
 
 
+@require_access
 async def remove_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Пример: /remove kraken")
@@ -317,16 +355,19 @@ async def remove_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(msg)
 
 
+@require_access
 async def reset_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = reset_user_exchanges(update.effective_user.id)
     await update.message.reply_text(msg)
 
 
+@require_access
 async def all_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает интерактивное меню выбора бирж."""
     await exchanges_cmd(update, context)
 
 
+@require_access
 async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not context.args:
@@ -370,6 +411,7 @@ async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@require_access
 async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         uid = update.effective_user.id
@@ -421,6 +463,7 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПример: <code>/alert BTC 65000</code>", parse_mode="HTML")
 
 
+@require_access
 async def alert_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Укажите номер алерты из списка /alert")
@@ -540,7 +583,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.message.reply_text("Меню:", reply_markup=main_menu_keyboard())
         return
     if data == "help":
-        await query.message.reply_text(HELP_TEXT, reply_markup=main_menu_keyboard())
+        await query.message.reply_text(HELP_TEXT, reply_markup=main_menu_keyboard(), parse_mode="HTML")
         return
     if data == "ex":
         await exchanges_cmd(update, context)
@@ -572,6 +615,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.message.reply_text(
             format_user_settings(uid),
             reply_markup=min_pct_keyboard(get_min_arb_pct(uid)),
+            parse_mode="HTML",
         )
         return
     if data == "minmenu":
