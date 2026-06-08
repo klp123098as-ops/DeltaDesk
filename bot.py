@@ -119,15 +119,22 @@ async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для админа: добавить пользователя в белый список."""
     uid = update.effective_user.id
     logger.info(f"Admin attempt /allow by {uid}. Current ADMIN_ID is {ADMIN_ID}")
-    
-    if uid != ADMIN_ID: 
-        logger.warning(f"Unauthorized /allow attempt by {uid}")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Пример: /allow 12345678")
-        return
+
     try:
+        if not ADMIN_ID:
+            logger.warning(f"ADMIN_ID not set, blocking /allow by {uid}")
+            await update.message.reply_text("❌ Админ не настроен на этом боте.")
+            return
+
+        if uid != ADMIN_ID:
+            logger.warning(f"Unauthorized /allow attempt by {uid}")
+            await update.message.reply_text("❌ Недостаточно прав для этой команды.")
+            return
+
+        if not context.args:
+            await update.message.reply_text("Пример: /allow 12345678")
+            return
+
         target_id = int(context.args[0])
         add_to_whitelist(target_id)
         await update.message.reply_text(f"✅ Пользователь {target_id} добавлен в белый список.")
@@ -137,17 +144,28 @@ async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error(f"Could not notify user {target_id}: {e}")
     except ValueError:
         await update.message.reply_text("ID должен быть числом.")
+    except Exception as e:
+        logger.exception(f"Error in allow_cmd: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
 async def deny_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для админа: удалить пользователя из белого списка."""
     uid = update.effective_user.id
-    if uid != ADMIN_ID: return
-    
-    if not context.args:
-        await update.message.reply_text("Пример: /deny 12345678")
-        return
+
     try:
+        if not ADMIN_ID:
+            await update.message.reply_text("❌ Админ не настроен на этом боте.")
+            return
+
+        if uid != ADMIN_ID:
+            await update.message.reply_text("❌ Недостаточно прав для этой команды.")
+            return
+
+        if not context.args:
+            await update.message.reply_text("Пример: /deny 12345678")
+            return
+
         target_id = int(context.args[0])
         if target_id == ADMIN_ID:
             await update.message.reply_text("Нельзя удалить самого себя.")
@@ -156,16 +174,36 @@ async def deny_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Пользователь {target_id} удален из белого списка.")
     except ValueError:
         await update.message.reply_text("ID должен быть числом.")
+    except Exception as e:
+        logger.exception(f"Error in deny_cmd: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
 async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для админа: список всех допущенных."""
-    if update.effective_user.id != ADMIN_ID: return
-    wl = get_whitelist()
-    text = "👥 <b>Белый список:</b>\n\n"
-    for uid in wl:
-        text += f"• <code>{uid}</code>\n"
-    await update.message.reply_text(text, parse_mode="HTML")
+    uid = update.effective_user.id
+
+    try:
+        if not ADMIN_ID:
+            await update.message.reply_text("❌ Админ не настроен на этом боте.")
+            return
+
+        if uid != ADMIN_ID:
+            await update.message.reply_text("❌ Недостаточно прав для этой команды.")
+            return
+
+        wl = get_whitelist()
+        text = "👥 <b>Белый список:</b>\n\n"
+        if not wl:
+            text += "Список пуст."
+        else:
+            for user_id in wl:
+                is_admin = "👑" if user_id == ADMIN_ID else ""
+                text += f"• <code>{user_id}</code> {is_admin}\n"
+        await update.message.reply_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.exception(f"Error in whitelist_cmd: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -292,18 +330,22 @@ async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для проверки своего ID и статуса."""
-    uid = update.effective_user.id
-    is_admin = (uid == ADMIN_ID)
-    mode = "Webhook" if WEBHOOK_URL else "Polling"
-    
-    text = (
-        f"👤 <b>Ваш профиль:</b>\n\n"
-        f"• ID: <code>{uid}</code>\n"
-        f"• Статус: {'<b>АДМИНИСТРАТОР</b>' if is_admin else 'Пользователь'}\n"
-        f"• Режим бота: {mode}\n"
-        f"• Доступ: {'✅ Разрешен' if is_user_allowed(uid) else '❌ Ограничен'}"
-    )
-    await update.message.reply_text(text, parse_mode="HTML")
+    try:
+        uid = update.effective_user.id
+        is_admin = (uid == ADMIN_ID)
+        mode = "Webhook" if WEBHOOK_URL else "Polling"
+
+        text = (
+            f"👤 <b>Ваш профиль:</b>\n\n"
+            f"• ID: <code>{uid}</code>\n"
+            f"• Статус: {'<b>АДМИНИСТРАТОР</b>' if is_admin else 'Пользователь'}\n"
+            f"• Режим бота: {mode}\n"
+            f"• Доступ: {'✅ Разрешен' if is_user_allowed(uid) else '❌ Ограничен'}"
+        )
+        await update.message.reply_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.exception(f"Error in me_cmd: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
 async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -743,6 +785,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("min", min_cmd))
     app.add_handler(CommandHandler("alert", alert_cmd))
     app.add_handler(CommandHandler("alert_del", alert_del_cmd))
+    app.add_handler(CommandHandler("me", me_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("exchanges", exchanges_cmd))
     app.add_handler(CommandHandler("all_exchanges", all_exchanges_cmd))
