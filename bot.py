@@ -215,13 +215,17 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
-        await update.message.reply_text(
-            "Выберите монету кнопкой или: /price BTC",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-    await _send_prices(update, " ".join(context.args))
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "Выберите монету кнопкой или: /price BTC",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+        await _send_prices(update, " ".join(context.args))
+    except Exception as e:
+        logger.exception(f"Error in price_cmd: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
 async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -349,34 +353,34 @@ async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    uid = update.effective_user.id
-    if not context.args or len(context.args) < 2:
-        alerts = get_user_alerts(uid)
-        text = "🔔 <b>Ваши уведомления по цене:</b>\n\n"
-        if not alerts:
-            text += "Список пуст."
-        else:
-            for i, a in enumerate(alerts):
-                text += f"{i}. {a['base']} {'выше' if a['type'] == 'above' else 'ниже'} {a['price']}\n"
-            text += "\nУдалить: <code>/alert_del номер</code>"
-        
-        text += "\n\nДобавить: <code>/alert BTC 65000</code>"
-        await update.message.reply_text(text, parse_mode="HTML")
-        return
-
     try:
+        uid = update.effective_user.id
+        if not context.args or len(context.args) < 2:
+            alerts = get_user_alerts(uid)
+            text = "🔔 <b>Ваши уведомления по цене:</b>\n\n"
+            if not alerts:
+                text += "Список пуст."
+            else:
+                for i, a in enumerate(alerts):
+                    text += f"{i}. {a['base']} {'выше' if a['type'] == 'above' else 'ниже'} {a['price']}\n"
+                text += "\nУдалить: <code>/alert_del номер</code>"
+
+            text += "\n\nДобавить: <code>/alert BTC 65000</code>"
+            await update.message.reply_text(text, parse_mode="HTML")
+            return
+
         base = context.args[0].upper()
         target_price = float(context.args[1].replace(",", "."))
-        
+
         # Для алерта опрашиваем ВООБЩЕ ВСЕ биржи пользователя, чтобы хоть кто-то ответил
         exchanges = get_user_exchanges(uid)
         await update.message.reply_text(f"⏳ Проверяю цену {base} на {len(exchanges)} биржах...")
-        
+
         prices = await fetch_prices(f"{base}/USDT", exchanges)
         if not prices:
             await update.message.reply_text(f"❌ Ни одна биржа не ответила. Попробуйте еще раз.")
             return
-        
+
         # Берем среднюю цену или цену с самой быстрой биржи
         current = prices[0].last
         if not current:
@@ -384,7 +388,7 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         alert_type = "above" if target_price > current else "below"
-        
+
         add_user_alert(uid, base, target_price, alert_type)
         await update.message.reply_text(
             f"✅ <b>Уведомление создано!</b>\n\n"
@@ -395,8 +399,8 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode="HTML"
         )
     except Exception as e:
-        logger.error(f"Alert error: {e}")
-        await update.message.reply_text("Пример: <code>/alert BTC 65000</code>", parse_mode="HTML")
+        logger.exception(f"Alert error: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПример: <code>/alert BTC 65000</code>", parse_mode="HTML")
 
 
 async def alert_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -417,72 +421,88 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Фоновая задача для рассылки сигналов и алертов."""
     users_signals = get_all_users_with_signals()
     users_alerts = get_all_users_with_alerts()
-    
+
     if not users_signals and not users_alerts:
         return
 
-    logger.info("Фоновый скан...")
+    logger.info(f"Фоновый скан... Сигналы: {len(users_signals)}, Алерты: {len(users_alerts)}")
     try:
         # 1. Скан арбитража (если есть пользователи)
         new_items = []
         if users_signals:
             new_items = await get_new_signals(SCAN_COINS, DEFAULT_EXCHANGES, 0.1)
-        
+
         # 2. Скан скачков цены
         jumps = await get_price_jumps(SCAN_COINS, threshold_pct=2.5)
-        
+
         # 3. Скан алертов (по всем монетам из алертов)
         all_alert_bases = set()
         for alerts in users_alerts.values():
             for a in alerts:
                 all_alert_bases.add(a["base"])
-        
+
+        logger.info(f"Проверяю цены для {len(all_alert_bases)} монет...")
         current_prices = {}
         if all_alert_bases:
             for base in all_alert_bases:
-                p = await fetch_prices(f"{base}/USDT", ["binance"])
-                if p and p[0].last:
-                    current_prices[base] = p[0].last
+                try:
+                    p = await fetch_prices(f"{base}/USDT", ["binance"])
+                    if p and p[0].last:
+                        current_prices[base] = p[0].last
+                        logger.info(f"{base}: {p[0].last}$")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch price for {base}: {e}")
 
         # Рассылка сигналов арбитража
         for uid in users_signals:
-            user_min = get_min_arb_pct(uid)
-            messages = []
-            user_items = [item for item in new_items if item[2] >= user_min]
-            if user_items:
-                messages.append("🔔 <b>Авто-сигнал арбитража!</b>\n" + format_top_arbitrage(user_items, user_min))
-            if jumps:
-                jump_text = "🚀 <b>Резкие изменения (Binance):</b>\n"
-                for base, change, price in jumps:
-                    emoji = "📈" if change > 0 else "📉"
-                    jump_text += f"• {emoji} {base}: {change:+.2f}% (${price})\n"
-                messages.append(jump_text)
-            
-            if messages:
-                final_text = "\n\n".join(messages) + "\n\n<i>Отключить: /signals off</i>"
-                try:
-                    await context.bot.send_message(chat_id=uid, text=final_text, parse_mode="HTML")
-                except Exception: pass
+            try:
+                user_min = get_min_arb_pct(uid)
+                messages = []
+                user_items = [item for item in new_items if item[2] >= user_min]
+                if user_items:
+                    messages.append("🔔 <b>Авто-сигнал арбитража!</b>\n" + format_top_arbitrage(user_items, user_min))
+                if jumps:
+                    jump_text = "🚀 <b>Резкие изменения (Binance):</b>\n"
+                    for base, change, price in jumps:
+                        emoji = "📈" if change > 0 else "📉"
+                        jump_text += f"• {emoji} {base}: {change:+.2f}% (${price})\n"
+                    messages.append(jump_text)
+
+                if messages:
+                    final_text = "\n\n".join(messages) + "\n\n<i>Отключить: /signals off</i>"
+                    try:
+                        await context.bot.send_message(chat_id=uid, text=final_text, parse_mode="HTML")
+                    except Exception as e:
+                        logger.warning(f"Failed to send signal to {uid}: {e}")
+            except Exception as e:
+                logger.exception(f"Error processing signals for user {uid}: {e}")
 
         # Рассылка алертов по цене
         for uid, alerts in users_alerts.items():
-            for i, a in enumerate(alerts):
-                base = a["base"]
-                if base in current_prices:
-                    curr = current_prices[base]
-                    triggered = False
-                    if a["type"] == "above" and curr >= a["price"]:
-                        triggered = True
-                    elif a["type"] == "below" and curr <= a["price"]:
-                        triggered = True
-                    
-                    if triggered:
-                        text = f"🚨 <b>ALERT: {base} достиг цели!</b>\n\nТекущая цена: <b>{curr}$</b>\nВаша цель: {a['price']}$"
-                        try:
-                            await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
-                            remove_user_alert(uid, i) # Удаляем после срабатывания
-                        except Exception: pass
-                        
+            try:
+                # Идем в обратном порядке, чтобы индексы не сбивались при удалении
+                for i in range(len(alerts) - 1, -1, -1):
+                    a = alerts[i]
+                    base = a["base"]
+                    if base in current_prices:
+                        curr = current_prices[base]
+                        triggered = False
+                        if a["type"] == "above" and curr >= a["price"]:
+                            triggered = True
+                        elif a["type"] == "below" and curr <= a["price"]:
+                            triggered = True
+
+                        if triggered:
+                            text = f"🚨 <b>ALERT: {base} достиг цели!</b>\n\nТекущая цена: <b>{curr}$</b>\nВаша цель: {a['price']}$"
+                            try:
+                                await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+                                logger.info(f"Alert triggered for {uid}: {base} {a['type']} {a['price']}, current: {curr}")
+                                remove_user_alert(uid, i) # Удаляем после срабатывания
+                            except Exception as e:
+                                logger.warning(f"Failed to send alert to {uid}: {e}")
+            except Exception as e:
+                logger.exception(f"Error processing alerts for user {uid}: {e}")
+
     except Exception:
         logger.exception("Ошибка в фоновом сканере")
 
