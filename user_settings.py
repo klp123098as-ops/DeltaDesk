@@ -10,22 +10,38 @@ from config import DEFAULT_EXCHANGES, DEFAULT_MIN_ARB_PCT, SETTINGS_FILE, ADMIN_
 # Динамически получаем список всех бирж, которые поддерживает библиотека ccxt
 AVAILABLE_EXCHANGES = set(ccxt.exchanges)
 
+def _save_raw(data: dict) -> None:
+    SETTINGS_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
 def _load_raw() -> dict:
     if not SETTINGS_FILE.exists():
-        return {"whitelist": [ADMIN_ID] if ADMIN_ID else []}
+        default_data = {"whitelist": [ADMIN_ID] if ADMIN_ID else []}
+        _save_raw(default_data)
+        return default_data
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         if "whitelist" not in data:
             data["whitelist"] = [ADMIN_ID] if ADMIN_ID else []
+            _save_raw(data)
+        elif ADMIN_ID and ADMIN_ID not in data["whitelist"]:
+            # Убедимся, что админ всегда в белом списке
+            data["whitelist"].append(ADMIN_ID)
+            _save_raw(data)
         return data
     except (json.JSONDecodeError, OSError):
-        return {"whitelist": [ADMIN_ID] if ADMIN_ID else []}
+        default_data = {"whitelist": [ADMIN_ID] if ADMIN_ID else []}
+        _save_raw(default_data)
+        return default_data
 
 
 def is_user_allowed(user_id: int) -> bool:
-    if not ADMIN_ID: return True # Если админ не задан, пускаем всех
-    if user_id == ADMIN_ID: return True
-    return user_id in _load_raw().get("whitelist", [])
+    data = _load_raw()
+    # Проверяем белый список (без учета ADMIN_ID на уровне функции)
+    wl = data.get("whitelist", [])
+    return user_id in wl
 
 
 def add_to_whitelist(user_id: int) -> None:
@@ -48,13 +64,6 @@ def remove_from_whitelist(user_id: int) -> None:
 
 def get_whitelist() -> list[int]:
     return _load_raw().get("whitelist", [])
-
-
-def _save_raw(data: dict) -> None:
-    SETTINGS_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
 
 
 def _default_profile() -> dict:

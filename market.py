@@ -251,10 +251,10 @@ async def get_price_jumps(bases: list[str], threshold_pct: float = 3.0):
 
 def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: float = 0.0) -> str:
     if not prices: return f"❌ {symbol} не найден"
-    
+
     arb = calc_arbitrage(prices)
     lines = [f"<b>{symbol}</b>"]
-    
+
     if arb:
         profit, pct, buy_ex, sell_ex = arb
         # Показываем арбитраж ТОЛЬКО если он положительный (> 0.01%)
@@ -262,12 +262,15 @@ def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: fl
             lines.append(f"🟢 Арбитраж: <b>{pct:.2f}%</b>")
             lines.append(f"   {buy_ex.upper()} → {sell_ex.upper()}")
             lines.append("") # Пустая строка только если есть арбитраж
-    
+
     # Сортируем: сначала самые дорогие (лучшие для продажи), потом дешевые
     sorted_prices = sorted(prices, key=lambda x: x.last or 0, reverse=True)
     for p in sorted_prices:
-        price_str = f"{p.last:g}" if p.last else "?"
-        lines.append(f"• {p.exchange.upper()}: <code>{price_str}</code>")
+        buy_str = f"{p.ask:g}" if p.ask else "?"
+        sell_str = f"{p.bid:g}" if p.bid else "?"
+        lines.append(f"• {p.exchange.upper()}")
+        lines.append(f"  Покупка <code>{buy_str}</code>")
+        lines.append(f"  Продажа <code>{sell_str}</code>")
     return "\n".join(lines)
 
 def format_top_arbitrage(items: list, min_arb_pct: float) -> str:
