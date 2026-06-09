@@ -115,6 +115,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! Сравниваю цены на биржах и ищу арбитраж.\n\n" + HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
+        parse_mode="HTML",
     )
     await update.message.reply_text(
         "Быстрый доступ — кнопки ниже 👇",
@@ -228,6 +229,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
+        parse_mode="HTML",
     )
     await update.message.reply_text("Меню:", reply_markup=main_menu_keyboard())
 
