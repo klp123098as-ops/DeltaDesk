@@ -225,15 +225,22 @@ async def get_new_signals(bases: list[str], exchanges: list[str], min_pct: float
 
 
 async def get_price_jumps(bases: list[str], threshold_pct: float = 3.0):
-    """Отслеживает резкие изменения цены на Binance."""
+    """Отслеживает резкие изменения цены (с fallback на разные биржи)."""
     # Периодическая очистка истории цен
     _cleanup_price_history()
-    
+
     jumps = []
-    # Используем Binance как эталон для скачков цены
+    # Биржи для проверки (в порядке предпочтения)
+    price_sources = ["kucoin", "bybit", "okx", "binance"]
     symbol_list = [f"{b}/USDT" for b in bases[:15]]
-    tasks = [_fetch_one_ccxt("binance", s) for s in symbol_list]
-    results = await asyncio.gather(*tasks)
+
+    # Пробуем биржи по очереди, пока не получим цены
+    results = None
+    for exchange in price_sources:
+        tasks = [_fetch_one_ccxt(exchange, s) for s in symbol_list]
+        results = await asyncio.gather(*tasks)
+        if any(r for r in results):  # Если хотя бы одна биржа ответила
+            break
     
     for p in results:
         if not p or not p.last: continue
