@@ -371,8 +371,10 @@ async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+
     try:
-        uid = update.effective_user.id
+        # Без параметров — показываем список
         if not context.args or len(context.args) < 2:
             alerts = get_user_alerts(uid)
             text = "🔔 <b>Ваши уведомления по цене:</b>\n\n"
@@ -380,45 +382,72 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 text += "Список пуст."
             else:
                 for i, a in enumerate(alerts):
-                    text += f"{i}. {a['base']} {'выше' if a['type'] == 'above' else 'ниже'} {a['price']}\n"
-                text += "\nУдалить: <code>/alert_del номер</code>"
+                    direction = "повышение выше" if a['type'] == "above" else "понижение ниже"
+                    text += f"{i}. <b>{a['base']}</b>: {direction} ${a['price']}\n"
+                text += "\n<code>/alert_del 0</code> — удалить первый алерт"
 
-            text += "\n\nДобавить: <code>/alert BTC 65000</code>"
+            text += "\n\n<b>Добавить новый:</b>\n<code>/alert BTC 65000</code>"
             await update.message.reply_text(text, parse_mode="HTML")
             return
 
+        # Создание нового алерта
         base = context.args[0].upper()
-        target_price = float(context.args[1].replace(",", "."))
+        try:
+            target_price = float(context.args[1].replace(",", "."))
+        except (ValueError, IndexError):
+            await update.message.reply_text("❌ Ошибка: укажите цену числом.\nПример: <code>/alert BTC 65000</code>", parse_mode="HTML")
+            return
 
-        # Для алерта опрашиваем ВООБЩЕ ВСЕ биржи пользователя, чтобы хоть кто-то ответил
+        # Проверяем, существует ли такая монета
+        symbol = normalize_symbol(base)
+        logger.info(f"Creating alert for {uid}: {base} at ${target_price}")
+
+        # Берем биржи пользователя, но если их нет — используем Binance
         exchanges = get_user_exchanges(uid)
-        await update.message.reply_text(f"⏳ Проверяю цену {base} на {len(exchanges)} биржах...")
+        if not exchanges:
+            exchanges = ["binance"]
 
-        prices = await fetch_prices(f"{base}/USDT", exchanges)
-        if not prices:
-            await update.message.reply_text(f"❌ Ни одна биржа не ответила. Попробуйте еще раз.")
-            return
+        wait_msg = await update.message.reply_text(f"⏳ Проверяю цену {base} на биржах...")
 
-        # Берем среднюю цену или цену с самой быстрой биржи
-        current = prices[0].last
-        if not current:
-            await update.message.reply_text(f"❌ Не удалось получить цену. Попробуйте позже.")
-            return
+        try:
+            prices = await fetch_prices(symbol, exchanges)
+            logger.info(f"Got prices for {symbol}: {len(prices)} exchanges responded")
 
-        alert_type = "above" if target_price > current else "below"
+            if not prices or not any(p.last for p in prices):
+                await wait_msg.edit_text(f"❌ Монета <b>{base}</b> не найдена.\nПроверьте написание (например, BTC, ETH, SOL).", parse_mode="HTML")
+                return
 
-        add_user_alert(uid, base, target_price, alert_type)
-        await update.message.reply_text(
-            f"✅ <b>Уведомление создано!</b>\n\n"
-            f"Монета: {base}\n"
-            f"Текущая цена: {current}$\n"
-            f"Цель: {'выше' if alert_type == 'above' else 'ниже'} {target_price}$\n\n"
-            f"Я пришлю сообщение, как только цель будет достигнута.",
-            parse_mode="HTML"
-        )
+            # Берем актуальную цену (первая непустая)
+            current = next((p.last for p in prices if p.last), None)
+            if not current:
+                await wait_msg.edit_text(f"❌ Не удалось получить цену для {base}. Попробуйте позже.", parse_mode="HTML")
+                return
+
+            # Определяем тип алерта
+            alert_type = "above" if target_price > current else "below"
+
+            # Сохраняем алерт
+            add_user_alert(uid, base, target_price, alert_type)
+            logger.info(f"Alert saved for {uid}: {base} {alert_type} {target_price} (current: {current})")
+
+            direction_text = f"выше ${target_price}" if alert_type == "above" else f"ниже ${target_price}"
+
+            await wait_msg.edit_text(
+                f"✅ <b>Уведомление создано!</b>\n\n"
+                f"Монета: <b>{base}</b>\n"
+                f"Текущая цена: <b>${current:.2f}</b>\n"
+                f"Алерт при: {direction_text}\n\n"
+                f"<i>Я пришлю сообщение, когда цена будет достигнута.</i>\n"
+                f"<i>Отключить: /signals off</i>",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.exception(f"Error fetching price for {symbol}: {e}")
+            await wait_msg.edit_text(f"❌ Ошибка при запросе цены: {str(e)}", parse_mode="HTML")
+
     except Exception as e:
-        logger.exception(f"Alert error: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПример: <code>/alert BTC 65000</code>", parse_mode="HTML")
+        logger.exception(f"Alert command error: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
 
 
 async def alert_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -498,26 +527,36 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         # Рассылка алертов по цене
         for uid, alerts in users_alerts.items():
             try:
-                # Идем в обратном порядке, чтобы индексы не сбивались при удалении
-                for i in range(len(alerts) - 1, -1, -1):
-                    a = alerts[i]
+                # Делаем копию, чтобы не лезть в оригинальный список
+                alerts_to_check = list(alerts)
+                triggered_indices = []
+
+                for i, a in enumerate(alerts_to_check):
                     base = a["base"]
                     if base in current_prices:
                         curr = current_prices[base]
                         triggered = False
+
+                        # Проверяем условие алерта
                         if a["type"] == "above" and curr >= a["price"]:
                             triggered = True
                         elif a["type"] == "below" and curr <= a["price"]:
                             triggered = True
 
                         if triggered:
-                            text = f"🚨 <b>ALERT: {base} достиг цели!</b>\n\nТекущая цена: <b>{curr}$</b>\nВаша цель: {a['price']}$"
+                            direction_text = f"выше ${a['price']}" if a['type'] == "above" else f"ниже ${a['price']}"
+                            text = f"🚨 <b>ALERT: {base} достиг цели!</b>\n\nТекущая цена: <b>${curr:.2f}</b>\nВаша цель: {direction_text}"
                             try:
                                 await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
-                                logger.info(f"Alert triggered for {uid}: {base} {a['type']} {a['price']}, current: {curr}")
-                                remove_user_alert(uid, i) # Удаляем после срабатывания
+                                logger.info(f"✅ Alert sent to {uid}: {base} {a['type']} {a['price']}, current: {curr}")
+                                triggered_indices.append(i)
                             except Exception as e:
                                 logger.warning(f"Failed to send alert to {uid}: {e}")
+
+                # Удаляем сработавшие алерты (в обратном порядке, чтобы индексы не сбивались)
+                for i in sorted(triggered_indices, reverse=True):
+                    remove_user_alert(uid, i)
+
             except Exception as e:
                 logger.exception(f"Error processing alerts for user {uid}: {e}")
 
