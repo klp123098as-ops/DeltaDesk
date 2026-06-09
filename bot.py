@@ -3,7 +3,7 @@ import re
 import asyncio
 from aiohttp import web
 
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -11,15 +11,6 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
-)
-from access_requests import (
-    add_request,
-    remove_request,
-    has_request,
-    get_requests,
-    set_granted_by,
-    get_granted_by,
-    clear_grant,
 )
 
 from analysis import analyze_symbol
@@ -82,53 +73,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def _access_denied_markup(already_requested: bool) -> InlineKeyboardMarkup:
-    if already_requested:
-        text = "⏳ Запрос уже отправлен"
-    else:
-        text = "📨 Запросить доступ"
-    return InlineKeyboardMarkup([[InlineKeyboardButton(text, callback_data="req_access")]])
-
-
-def _access_denied_text(uid: int, already_requested: bool) -> str:
-    base = (
-        f"⛔️ Доступ ограничен.\n\nВаш ID: <code>{uid}</code>\n"
-        "Передайте этот ID владельцу бота для получения доступа."
-    )
-    if already_requested:
-        base += "\n\n⏳ Ваш запрос на доступ уже отправлен администратору."
-    else:
-        base += "\n\nИли нажмите кнопку ниже, чтобы отправить запрос автоматически."
-    return base
-
-
-def require_access(func):
-    """Декоратор: блокирует команду, если пользователь не в whitelist."""
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user is None:
-            return
-        uid = user.id
-        # Обновим инфо о пользователе на всякий случай
-        try:
-            save_user_info(uid, first_name=user.first_name or "", username=user.username or "")
-        except Exception:
-            pass
-        if not is_user_allowed(uid):
-            msg = update.effective_message
-            if msg is not None:
-                already = has_request(uid)
-                await msg.reply_text(
-                    _access_denied_text(uid, already),
-                    parse_mode="HTML",
-                    reply_markup=_access_denied_markup(already),
-                )
-            return
-        return await func(update, context)
-    wrapper.__name__ = func.__name__
-    return wrapper
-
 HELP_TEXT = """
 🤖 <b>DeltaDesk — твой крипто-сканер</b>
 
@@ -148,7 +92,6 @@ HELP_TEXT = """
 /allow ID — дать доступ
 /deny ID — закрыть доступ
 /whitelist — список пользователей
-/requests — запросы на доступ
 
 Просто нажми / и выбери команду!
 """.strip()
@@ -162,18 +105,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     save_user_info(uid, first_name=user.first_name or "", username=user.username or "")
 
     if not is_user_allowed(uid):
-        already = has_request(uid)
         await update.message.reply_text(
-            _access_denied_text(uid, already),
-            parse_mode="HTML",
-            reply_markup=_access_denied_markup(already),
+            f"⛔️ Доступ ограничен.\n\nВаш ID: <code>{uid}</code>\n"
+            "Передайте этот ID владельцу бота для получения доступа.",
+            parse_mode="HTML"
         )
         return
 
     await update.message.reply_text(
         "Привет! Сравниваю цены на биржах и ищу арбитраж.\n\n" + HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
-        parse_mode="HTML",
     )
     await update.message.reply_text(
         "Быстрый доступ — кнопки ниже 👇",
@@ -203,17 +144,9 @@ async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         target_id = int(context.args[0])
         add_to_whitelist(target_id)
-        set_granted_by(target_id, uid)
-        remove_request(target_id)
-        await update.message.reply_text(
-            f"✅ Пользователь <code>{target_id}</code> добавлен в белый список.",
-            parse_mode="HTML",
-        )
+        await update.message.reply_text(f"✅ Пользователь {target_id} добавлен в белый список.")
         try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text="🎉 Вам предоставлен доступ к боту! Напишите /start",
-            )
+            await context.bot.send_message(chat_id=target_id, text="🎉 Вам предоставлен доступ к боту! Напишите /start")
         except Exception as e:
             logger.error(f"Could not notify user {target_id}: {e}")
     except ValueError:
@@ -245,19 +178,7 @@ async def deny_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("Нельзя удалить самого себя.")
             return
         remove_from_whitelist(target_id)
-        clear_grant(target_id)
-        remove_request(target_id)
-        await update.message.reply_text(
-            f"❌ Пользователь <code>{target_id}</code> удалён из белого списка.",
-            parse_mode="HTML",
-        )
-        try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text="🚫 Ваш доступ к боту был отозван администратором.",
-            )
-        except Exception as e:
-            logger.error(f"Could not notify user {target_id}: {e}")
+        await update.message.reply_text(f"❌ Пользователь {target_id} удален из белого списка.")
     except ValueError:
         await update.message.reply_text("ID должен быть числом.")
     except Exception as e:
@@ -296,67 +217,21 @@ async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if username:
                     user_display += f" (@{username})"
 
-                # Кто выдал доступ
-                granted_by = get_granted_by(user_id)
-                if user_id == ADMIN_ID:
-                    granted_str = " — владелец"
-                elif granted_by:
-                    g_info = get_user_info(granted_by)
-                    g_name = g_info.get("first_name", "") or g_info.get("username", "") or str(granted_by)
-                    granted_str = f"\n   ↳ выдал: {g_name} (<code>{granted_by}</code>)"
-                else:
-                    granted_str = "\n   ↳ выдал: —"
-
-                text += f"• {user_display} {is_admin}{granted_str}\n"
+                text += f"• {user_display} {is_admin}\n"
         await update.message.reply_text(text, parse_mode="HTML")
     except Exception as e:
         logger.exception(f"Error in whitelist_cmd: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
-async def requests_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда для админа: панель запросов на доступ."""
-    uid = update.effective_user.id
-    if not ADMIN_ID or uid != ADMIN_ID:
-        await update.message.reply_text("❌ Недостаточно прав для этой команды.")
-        return
-
-    reqs = get_requests()
-    if not reqs:
-        await update.message.reply_text("📭 Запросов на доступ нет.")
-        return
-
-    await update.message.reply_text(f"📨 <b>Запросы на доступ ({len(reqs)}):</b>", parse_mode="HTML")
-    for key, info in reqs.items():
-        try:
-            target_id = int(key)
-        except ValueError:
-            continue
-        first_name = info.get("first_name", "")
-        username = info.get("username", "")
-        display = f"<code>{target_id}</code>"
-        if first_name:
-            display += f" • {first_name}"
-        if username:
-            display += f" (@{username})"
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Принять", callback_data=f"req_approve:{target_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"req_deny:{target_id}"),
-        ]])
-        await update.message.reply_text(display, parse_mode="HTML", reply_markup=kb)
-
-
-@require_access
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
-        parse_mode="HTML",
     )
     await update.message.reply_text("Меню:", reply_markup=main_menu_keyboard())
 
 
-@require_access
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if not context.args:
@@ -371,7 +246,6 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
-@require_access
 async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Пример: /analyze BTC")
@@ -379,12 +253,10 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _send_analysis(update, " ".join(context.args))
 
 
-@require_access
 async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_top(update)
 
 
-@require_access
 async def min_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not context.args:
@@ -409,17 +281,14 @@ async def min_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-@require_access
 async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     await update.message.reply_text(
         format_user_settings(uid),
         reply_markup=min_pct_keyboard(get_min_arb_pct(uid)),
-        parse_mode="HTML",
     )
 
 
-@require_access
 async def exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     mine = get_user_exchanges(uid)
@@ -432,7 +301,6 @@ async def exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-@require_access
 async def add_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Пример: /add binance")
@@ -441,7 +309,6 @@ async def add_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(msg)
 
 
-@require_access
 async def remove_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Пример: /remove kraken")
@@ -450,19 +317,16 @@ async def remove_exchange_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(msg)
 
 
-@require_access
 async def reset_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = reset_user_exchanges(update.effective_user.id)
     await update.message.reply_text(msg)
 
 
-@require_access
 async def all_exchanges_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает интерактивное меню выбора бирж."""
     await exchanges_cmd(update, context)
 
 
-@require_access
 async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     if not context.args:
@@ -506,7 +370,6 @@ async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
-@require_access
 async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         uid = update.effective_user.id
@@ -558,7 +421,6 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}\n\nПример: <code>/alert BTC 65000</code>", parse_mode="HTML")
 
 
-@require_access
 async def alert_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Укажите номер алерты из списка /alert")
@@ -665,104 +527,20 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    user = update.effective_user
-    uid = user.id
-    data = query.data or ""
-
-    # --- Запрос доступа от пользователя (доступен без whitelist) ---
-    if data == "req_access":
-        if is_user_allowed(uid):
-            await query.answer("У вас уже есть доступ", show_alert=True)
-            return
-        try:
-            save_user_info(uid, first_name=user.first_name or "", username=user.username or "")
-        except Exception:
-            pass
-        is_new = add_request(uid, first_name=user.first_name or "", username=user.username or "")
-        if is_new:
-            await query.answer("Запрос отправлен админу", show_alert=True)
-            try:
-                await query.edit_message_reply_markup(reply_markup=_access_denied_markup(True))
-            except Exception:
-                pass
-            if ADMIN_ID:
-                display = f"<code>{uid}</code>"
-                if user.first_name:
-                    display += f" • {user.first_name}"
-                if user.username:
-                    display += f" (@{user.username})"
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Принять", callback_data=f"req_approve:{uid}"),
-                    InlineKeyboardButton("❌ Отклонить", callback_data=f"req_deny:{uid}"),
-                ]])
-                try:
-                    await context.bot.send_message(
-                        chat_id=ADMIN_ID,
-                        text=f"📨 <b>Новый запрос на доступ:</b>\n{display}",
-                        parse_mode="HTML",
-                        reply_markup=kb,
-                    )
-                except Exception as e:
-                    logger.error(f"Could not notify admin about request: {e}")
-        else:
-            await query.answer("Запрос уже был отправлен ранее", show_alert=True)
-        return
-
-    # --- Админские действия по запросам ---
-    if data.startswith("req_approve:") or data.startswith("req_deny:"):
-        if not ADMIN_ID or uid != ADMIN_ID:
-            await query.answer("Недостаточно прав", show_alert=True)
-            return
-        try:
-            target_id = int(data.split(":", 1)[1])
-        except ValueError:
-            await query.answer("Ошибка ID", show_alert=True)
-            return
-        if data.startswith("req_approve:"):
-            add_to_whitelist(target_id)
-            set_granted_by(target_id, uid)
-            remove_request(target_id)
-            await query.answer("Доступ выдан")
-            try:
-                base_text = query.message.text_html or query.message.text or ""
-                await query.edit_message_text(base_text + "\n\n✅ <b>Принято</b>", parse_mode="HTML")
-            except Exception:
-                pass
-            try:
-                await context.bot.send_message(
-                    chat_id=target_id,
-                    text="🎉 Вам предоставлен доступ к боту! Напишите /start",
-                )
-            except Exception as e:
-                logger.error(f"Could not notify user {target_id}: {e}")
-        else:
-            remove_request(target_id)
-            await query.answer("Запрос отклонён")
-            try:
-                base_text = query.message.text_html or query.message.text or ""
-                await query.edit_message_text(base_text + "\n\n❌ <b>Отклонено</b>", parse_mode="HTML")
-            except Exception:
-                pass
-            try:
-                await context.bot.send_message(
-                    chat_id=target_id,
-                    text="🚫 К сожалению, в доступе отказано.",
-                )
-            except Exception as e:
-                logger.error(f"Could not notify user {target_id}: {e}")
-        return
-
+    uid = update.effective_user.id
+    
     if not is_user_allowed(uid):
         await query.answer("Доступ ограничен", show_alert=True)
         return
 
     await query.answer()
+    data = query.data or ""
 
     if data == "menu":
         await query.message.reply_text("Меню:", reply_markup=main_menu_keyboard())
         return
     if data == "help":
-        await query.message.reply_text(HELP_TEXT, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+        await query.message.reply_text(HELP_TEXT, reply_markup=main_menu_keyboard())
         return
     if data == "ex":
         await exchanges_cmd(update, context)
@@ -794,7 +572,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.message.reply_text(
             format_user_settings(uid),
             reply_markup=min_pct_keyboard(get_min_arb_pct(uid)),
-            parse_mode="HTML",
         )
         return
     if data == "minmenu":
@@ -1023,7 +800,6 @@ async def post_init(application: Application) -> None:
                 BotCommand("allow", "Добавить в белый список"),
                 BotCommand("deny", "Удалить из белого списка"),
                 BotCommand("whitelist", "Список допущенных"),
-                BotCommand("requests", "Запросы на доступ"),
             ]
             # Устанавливаем админ-команды специально для админа
             from telegram import BotCommandScopeChat
@@ -1063,7 +839,6 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("allow", allow_cmd))
     app.add_handler(CommandHandler("deny", deny_cmd))
     app.add_handler(CommandHandler("whitelist", whitelist_cmd))
-    app.add_handler(CommandHandler("requests", requests_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     return app

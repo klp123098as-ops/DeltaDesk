@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -6,7 +7,12 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID_STR = os.getenv("ADMIN_ID", "").strip()
+ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else 0
+
+logger = logging.getLogger(__name__)
+if BOT_TOKEN:
+    logger.info(f"CONFIG: BOT_TOKEN=******, ADMIN_ID={ADMIN_ID}")
 
 # Облако: если задан WEBHOOK_URL — режим webhook (Render и т.п.)
 # Локально и на Fly.io — оставьте пустым (режим polling)
