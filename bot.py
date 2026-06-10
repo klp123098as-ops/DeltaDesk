@@ -476,10 +476,21 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     users_signals = get_all_users_with_signals()
     users_alerts = get_all_users_with_alerts()
 
+    logger.info(f"=== BACKGROUND JOB STARTED ===")
+    logger.info(f"Пользователей с сигналами: {len(users_signals)}")
+    logger.info(f"Пользователей с алертами: {len(users_alerts)}")
+
+    if users_alerts:
+        for uid, alerts in users_alerts.items():
+            logger.info(f"  User {uid}: {len(alerts)} алертов")
+            for a in alerts:
+                logger.info(f"    - {a['base']} {a['type']} ${a['price']}")
+
     if not users_signals and not users_alerts:
+        logger.info("Нет пользователей с активными сигналами/алертами, выход")
         return
 
-    logger.info(f"Фоновый скан... Сигналы: {len(users_signals)}, Алерты: {len(users_alerts)}")
+    logger.info(f"Начинаю сканирование...")
     try:
         # 1. Скан арбитража (если есть пользователи)
         new_items = []
@@ -498,24 +509,37 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info(f"Проверяю цены для {len(all_alert_bases)} монет...")
 
         # Для каждого юзера получаем цены на его биржах
-        user_current_prices = {}  # {uid: {base: price}}
+        # Format: {uid: {base: {'price': avg, 'exchanges_str': str, 'all_prices': [ExchangePrice]}}}
+        user_current_prices = {}
         for uid, alerts in users_alerts.items():
             user_exchanges = get_user_exchanges(uid)
             user_alert_bases = set(a["base"] for a in alerts)
 
+            logger.info(f"User {uid}: биржи = {user_exchanges}, монеты = {user_alert_bases}")
+
             user_current_prices[uid] = {}
             for base in user_alert_bases:
                 try:
+                    logger.info(f"  Получаю цену {base} на {user_exchanges}...")
                     prices = await fetch_prices(f"{base}/USDT", user_exchanges)
                     valid_prices = [p for p in prices if p.last]
+
+                    logger.info(f"    Ответило {len(valid_prices)} бирж из {len(prices)}")
+
                     if valid_prices:
-                        # Берем среднюю цену или первую
+                        # Берем среднюю цену
                         avg_price = sum(p.last for p in valid_prices) / len(valid_prices)
                         exchanges_str = ", ".join(p.exchange.upper() for p in valid_prices)
-                        user_current_prices[uid][base] = (avg_price, exchanges_str)
-                        logger.info(f"User {uid}: {base} = ${avg_price:.2f} (from {exchanges_str})")
+                        user_current_prices[uid][base] = {
+                            'price': avg_price,
+                            'exchanges_str': exchanges_str,
+                            'all_prices': valid_prices
+                        }
+                        logger.info(f"    ✅ {base} = ${avg_price:.2f} (from {exchanges_str})")
+                    else:
+                        logger.warning(f"    ❌ Нет ответов от бирж для {base}")
                 except Exception as e:
-                    logger.warning(f"Failed to fetch price for {uid}/{base}: {e}")
+                    logger.exception(f"Failed to fetch price for {uid}/{base}: {e}")
 
         # Рассылка сигналов арбитража
         for uid in users_signals:
@@ -542,9 +566,11 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.exception(f"Error processing signals for user {uid}: {e}")
 
         # Рассылка алертов по цене
+        logger.info(f"Проверка алертов для {len(users_alerts)} пользователей...")
         for uid, alerts in users_alerts.items():
             try:
                 user_prices = user_current_prices.get(uid, {})
+                logger.info(f"User {uid}: есть цены для {len(user_prices)} монет")
 
                 # Делаем копию, чтобы не лезть в оригинальный список
                 alerts_to_check = list(alerts)
@@ -552,33 +578,51 @@ async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 for i, a in enumerate(alerts_to_check):
                     base = a["base"]
+                    logger.info(f"  Проверяю алерт {i}: {base} {a['type']} ${a['price']}")
 
                     if base in user_prices:
-                        curr, exchanges_str = user_prices[base]
+                        price_data = user_prices[base]
+                        curr = price_data['price']
+                        all_prices = price_data['all_prices']
                         triggered = False
+                        triggered_exchanges = []
 
-                        # Проверяем условие алерта
-                        if a["type"] == "above" and curr >= a["price"]:
-                            triggered = True
-                        elif a["type"] == "below" and curr <= a["price"]:
-                            triggered = True
+                        logger.info(f"    Средняя цена: ${curr:.2f}")
+
+                        # Проверяем условие алерта и ищем биржи, где цена соответствует
+                        for p in all_prices:
+                            if a["type"] == "above" and p.last >= a["price"]:
+                                triggered = True
+                                triggered_exchanges.append(p.exchange.upper())
+                            elif a["type"] == "below" and p.last <= a["price"]:
+                                triggered = True
+                                triggered_exchanges.append(p.exchange.upper())
 
                         if triggered:
+                            logger.info(f"    ✅ TRIGGERED на биржах: {triggered_exchanges}")
                             direction_text = f"выше ${a['price']}" if a['type'] == "above" else f"ниже ${a['price']}"
-                            text = f"🚨 <b>ALERT: {base} достиг цели!</b>\n\nТекущая цена: <b>${curr:.2f}</b>\nВаша цель: {direction_text}\nБиржи: <b>{exchanges_str}</b>"
+                            exchanges_triggered = ", ".join(triggered_exchanges)
+                            text = f"🚨 <b>ALERT: {base} достиг цели!</b>\n\nТекущая цена: <b>${curr:.2f}</b>\nВаша цель: {direction_text}\n\n<b>Достигнута на:</b> {exchanges_triggered}"
                             try:
                                 await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
-                                logger.info(f"✅ Alert sent to {uid}: {base} {a['type']} {a['price']}, current: {curr} ({exchanges_str})")
+                                logger.info(f"✅✅✅ Alert SENT to {uid}: {base} {a['type']} {a['price']}, current: {curr} ({exchanges_triggered})")
                                 triggered_indices.append(i)
                             except Exception as e:
-                                logger.warning(f"Failed to send alert to {uid}: {e}")
+                                logger.exception(f"Failed to send alert to {uid}: {e}")
+                        else:
+                            logger.info(f"    ❌ Не срабатывает")
+                    else:
+                        logger.warning(f"    ❌ Нет цены для {base}")
 
                 # Удаляем сработавшие алерты (в обратном порядке, чтобы индексы не сбивались)
                 for i in sorted(triggered_indices, reverse=True):
+                    logger.info(f"  Удаляю алерт {i}")
                     remove_user_alert(uid, i)
 
             except Exception as e:
                 logger.exception(f"Error processing alerts for user {uid}: {e}")
+
+        logger.info(f"=== BACKGROUND JOB FINISHED ===")
 
     except Exception:
         logger.exception("Ошибка в фоновом сканере")
