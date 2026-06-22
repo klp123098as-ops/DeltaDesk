@@ -478,8 +478,11 @@ async def daily_movers_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Ежедневная рассылка топ монет по волатильности."""
     logger.info("=== DAILY MOVERS JOB STARTED ===")
     try:
-        # Получаем топ монеты
-        movers_data = await get_top_movers(["binance", "bybit", "okx"], limit=3)
+        # Получаем топ монеты (с fallback на другие биржи)
+        movers_data = await get_top_movers(
+            ["okx", "kucoin", "gate", "mexc", "htx", "binance", "bybit"],
+            limit=3
+        )
         message = await format_movers(movers_data)
 
         # Получаем всех пользователей

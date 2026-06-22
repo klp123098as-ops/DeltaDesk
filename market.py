@@ -167,17 +167,21 @@ async def get_top_movers(exchanges: list[str] = None, limit: int = 3) -> dict:
 
     Returns:
         {exchange: [(symbol, change_pct, bid, ask), ...]}
+
+    Пробует получить данные с максимум 3 доступных бирж.
     """
     if not exchanges:
         # Порядок предпочтения: если одна не работает, пробуем другую
-        exchanges = ["okx", "kucoin", "gate", "bybit", "binance"]
+        exchanges = ["okx", "kucoin", "gate", "mexc", "htx", "upbit", "bybit", "binance"]
 
     result = {}
     used_exchanges = set()
+    max_exchanges = 3  # Максимум 3 биржи в результате
 
     for exchange in exchanges:
         # Пробуем до 3 разных бирж (на случай, если несколько заблокированы)
-        if len(used_exchanges) >= 3:
+        if len(used_exchanges) >= max_exchanges:
+            logger.info(f"Got data from {len(used_exchanges)} exchanges, stopping")
             break
 
         try:
