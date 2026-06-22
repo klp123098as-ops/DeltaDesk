@@ -169,25 +169,34 @@ async def get_top_movers(exchanges: list[str] = None, limit: int = 3) -> dict:
         {exchange: [(symbol, change_pct, bid, ask), ...]}
     """
     if not exchanges:
-        exchanges = ["binance", "bybit", "okx"]
+        # Порядок предпочтения: если одна не работает, пробуем другую
+        exchanges = ["okx", "kucoin", "gate", "bybit", "binance"]
 
     result = {}
+    used_exchanges = set()
 
     for exchange in exchanges:
+        # Пробуем до 3 разных бирж (на случай, если несколько заблокированы)
+        if len(used_exchanges) >= 3:
+            break
+
         try:
+            logger.info(f"Trying to get movers from {exchange}...")
             ex = await get_exchange_instance(exchange)
             if not ex:
+                logger.warning(f"{exchange} not available")
                 continue
 
             # Загружаем маркеты
-            await ex.load_markets()
-            symbols = list(ex.symbols)[:100]  # Топ 100 монет
+            await asyncio.wait_for(ex.load_markets(), timeout=30.0)
+            symbols = list(ex.symbols)[:80]  # Топ 80 монет
 
             # Получаем тикеры
             movers = []
-            tasks = [ex.fetch_ticker(s) for s in symbols]
+            tasks = [asyncio.wait_for(ex.fetch_ticker(s), timeout=15.0) for s in symbols[:50]]  # Берем первые 50
             tickers = await asyncio.gather(*tasks, return_exceptions=True)
 
+            successful = 0
             for ticker in tickers:
                 if isinstance(ticker, dict) and ticker.get("percentage"):
                     change = _num(ticker.get("percentage"))
@@ -196,13 +205,21 @@ async def get_top_movers(exchanges: list[str] = None, limit: int = 3) -> dict:
                         bid = _num(ticker.get("bid"))
                         ask = _num(ticker.get("ask"))
                         movers.append((symbol, change, bid, ask))
+                        successful += 1
 
-            # Сортируем по абсолютному значению изменения
-            movers.sort(key=lambda x: abs(x[1]), reverse=True)
-            result[exchange] = movers[:limit]
+            if successful > 0:
+                # Сортируем по абсолютному значению изменения
+                movers.sort(key=lambda x: abs(x[1]), reverse=True)
+                result[exchange] = movers[:limit]
+                used_exchanges.add(exchange)
+                logger.info(f"✅ Got {successful} movers from {exchange}")
+            else:
+                logger.warning(f"No valid tickers from {exchange}")
 
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout for {exchange}")
         except Exception as e:
-            logger.warning(f"Failed to get movers for {exchange}: {e}")
+            logger.warning(f"Failed to get movers from {exchange}: {e}")
 
     return result
 
