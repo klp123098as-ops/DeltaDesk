@@ -479,9 +479,10 @@ async def daily_movers_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("=== DAILY MOVERS JOB STARTED ===")
     try:
         # Получаем топ монеты (с fallback на другие биржи)
+        # limit=5 означает 5 топ монет с каждой доступной биржи
         movers_data = await get_top_movers(
-            ["okx", "kucoin", "gate", "mexc", "htx", "binance", "bybit"],
-            limit=3
+            ["okx", "kucoin", "gate", "mexc", "htx", "upbit", "binance", "bybit"],
+            limit=5
         )
         message = await format_movers(movers_data)
 
@@ -956,9 +957,9 @@ def build_app() -> Application:
         # Фоновое сканирование алертов каждые 3 минуты
         app.job_queue.run_repeating(background_scanner_job, interval=180, first=10)
 
-        # Ежедневная рассылка топ монет в 21:40 МСК (18:40 UTC)
+        # Ежедневная рассылка топ монет в 21:50 МСК (18:50 UTC)
         from datetime import time
-        app.job_queue.run_daily(daily_movers_job, time=time(hour=18, minute=40))
+        app.job_queue.run_daily(daily_movers_job, time=time(hour=18, minute=50))
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))

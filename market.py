@@ -229,36 +229,39 @@ async def get_top_movers(exchanges: list[str] = None, limit: int = 3) -> dict:
 
 
 async def format_movers(movers_data: dict) -> str:
-    """Форматирует топ монеты в красивое сообщение."""
+    """Форматирует топ монеты в красивое сообщение без preview ссылок."""
     if not movers_data:
         return "Не удалось получить данные о движениях цен."
 
-    lines = ["🔥 <b>Что двигалось за 24 часа</b>\n"]
+    lines = ["🔥 <b>ТОП ДВИЖЕНИЯ за 24 часа</b>\n"]
 
     exchange_names = {
         "binance": "Binance USDT-M",
         "bybit": "Bybit USDT Perpetual",
-        "okx": "OKX USDT-M"
+        "okx": "OKX USDT-M",
+        "kucoin": "KuCoin",
+        "gate": "Gate.io",
+        "mexc": "MEXC",
+        "htx": "HTX",
+        "upbit": "Upbit"
     }
 
+    total_count = 0
     for exchange, movers in movers_data.items():
         if not movers:
             continue
 
         exchange_display = exchange_names.get(exchange, exchange.upper())
-        lines.append(f"\n<b>{exchange_display} 🔥</b>")
+        lines.append(f"\n{exchange_display} 🔥")
+        lines.append("─" * 30)
 
-        for symbol, change, bid, ask in movers:
-            # Ссылка на TradingView
-            base = symbol.split("/")[0].lower()
-            quote = symbol.split("/")[1].lower() if "/" in symbol else "usdt"
-
-            # Формируем ссылку
-            tv_link = f"https://www.tradingview.com/chart/?symbol={exchange.upper()}:{symbol}"
-
+        for i, (symbol, change, bid, ask) in enumerate(movers, 1):
             emoji = "📈" if change > 0 else "📉"
-            lines.append(f"{emoji} <a href=\"{tv_link}\"><b>{change:+.1f}%</b> {symbol}</a>")
+            # Без ссылок — просто текст
+            lines.append(f"{i}️⃣ {emoji} <b>{change:+.1f}%</b> — {symbol}")
+            total_count += 1
 
+    lines.append(f"\n<i>Всего {total_count} монет с макс движением</i>")
     return "\n".join(lines)
 
 
