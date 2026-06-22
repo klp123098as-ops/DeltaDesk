@@ -42,6 +42,8 @@ from market import (
     get_fear_greed_index,
     symbol_base,
     close_all_exchanges,
+    get_top_movers,
+    format_movers,
 )
 from user_settings import (
     AVAILABLE_EXCHANGES,
@@ -65,6 +67,7 @@ from user_settings import (
     get_whitelist,
     save_user_info,
     get_user_info,
+    _load_raw,
 )
 
 logging.basicConfig(
@@ -469,6 +472,32 @@ async def alert_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text("❌ Неверный номер.")
     except Exception:
         await update.message.reply_text("Пример: /alert_del 0")
+
+
+async def daily_movers_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ежедневная рассылка топ монет по волатильности."""
+    logger.info("=== DAILY MOVERS JOB STARTED ===")
+    try:
+        # Получаем топ монеты
+        movers_data = await get_top_movers(["binance", "bybit", "okx"], limit=3)
+        message = await format_movers(movers_data)
+
+        # Получаем всех пользователей
+        data = _load_raw()
+        all_users = [int(uid) for uid in data.keys() if uid.isdigit()]
+
+        logger.info(f"Отправляю моверс {len(all_users)} пользователям")
+
+        for uid in all_users:
+            try:
+                await context.bot.send_message(chat_id=uid, text=message, parse_mode="HTML")
+                logger.info(f"✅ Movers sent to {uid}")
+            except Exception as e:
+                logger.warning(f"Failed to send movers to {uid}: {e}")
+
+        logger.info("=== DAILY MOVERS JOB FINISHED ===")
+    except Exception as e:
+        logger.exception(f"Error in daily_movers_job: {e}")
 
 
 async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -921,7 +950,12 @@ def build_app() -> Application:
     
     # Регистрация фоновой задачи (каждые 3 минуты для алертов)
     if app.job_queue:
+        # Фоновое сканирование алертов каждые 3 минуты
         app.job_queue.run_repeating(background_scanner_job, interval=180, first=10)
+
+        # Ежедневная рассылка топ монет в 21:40 МСК (18:40 UTC)
+        from datetime import time
+        app.job_queue.run_daily(daily_movers_job, time=time(hour=18, minute=40))
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))

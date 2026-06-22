@@ -162,6 +162,85 @@ PRICE_HISTORY = {}
 # Время последней очистки PRICE_HISTORY
 LAST_PRICE_HISTORY_CLEANUP = time.time()
 
+async def get_top_movers(exchanges: list[str] = None, limit: int = 3) -> dict:
+    """Получает топ монеты по волатильности за 24ч по биржам.
+
+    Returns:
+        {exchange: [(symbol, change_pct, bid, ask), ...]}
+    """
+    if not exchanges:
+        exchanges = ["binance", "bybit", "okx"]
+
+    result = {}
+
+    for exchange in exchanges:
+        try:
+            ex = await get_exchange_instance(exchange)
+            if not ex:
+                continue
+
+            # Загружаем маркеты
+            await ex.load_markets()
+            symbols = list(ex.symbols)[:100]  # Топ 100 монет
+
+            # Получаем тикеры
+            movers = []
+            tasks = [ex.fetch_ticker(s) for s in symbols]
+            tickers = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for ticker in tickers:
+                if isinstance(ticker, dict) and ticker.get("percentage"):
+                    change = _num(ticker.get("percentage"))
+                    if change is not None:
+                        symbol = ticker.get("symbol", "")
+                        bid = _num(ticker.get("bid"))
+                        ask = _num(ticker.get("ask"))
+                        movers.append((symbol, change, bid, ask))
+
+            # Сортируем по абсолютному значению изменения
+            movers.sort(key=lambda x: abs(x[1]), reverse=True)
+            result[exchange] = movers[:limit]
+
+        except Exception as e:
+            logger.warning(f"Failed to get movers for {exchange}: {e}")
+
+    return result
+
+
+async def format_movers(movers_data: dict) -> str:
+    """Форматирует топ монеты в красивое сообщение."""
+    if not movers_data:
+        return "Не удалось получить данные о движениях цен."
+
+    lines = ["🔥 <b>Что двигалось за 24 часа</b>\n"]
+
+    exchange_names = {
+        "binance": "Binance USDT-M",
+        "bybit": "Bybit USDT Perpetual",
+        "okx": "OKX USDT-M"
+    }
+
+    for exchange, movers in movers_data.items():
+        if not movers:
+            continue
+
+        exchange_display = exchange_names.get(exchange, exchange.upper())
+        lines.append(f"\n<b>{exchange_display} 🔥</b>")
+
+        for symbol, change, bid, ask in movers:
+            # Ссылка на TradingView
+            base = symbol.split("/")[0].lower()
+            quote = symbol.split("/")[1].lower() if "/" in symbol else "usdt"
+
+            # Формируем ссылку
+            tv_link = f"https://www.tradingview.com/chart/?symbol={exchange.upper()}:{symbol}"
+
+            emoji = "📈" if change > 0 else "📉"
+            lines.append(f"{emoji} <a href=\"{tv_link}\"><b>{change:+.1f}%</b> {symbol}</a>")
+
+    return "\n".join(lines)
+
+
 async def get_fear_greed_index() -> str:
     """Получает индекс страха и жадности с Alternative.me"""
     try:
