@@ -479,29 +479,37 @@ async def daily_movers_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("=== DAILY MOVERS JOB STARTED ===")
     try:
         # Получаем топ монеты (с fallback на другие биржи)
-        # limit=5 означает 5 топ монет с каждой доступной биржи
+        logger.info("Получаю топ монеты...")
         movers_data = await get_top_movers(
-            ["okx", "kucoin", "gate", "mexc", "htx", "upbit", "binance", "bybit"],
+            ["okx", "kucoin", "gate", "mexc", "htx", "upbit", "huobi", "coinex"],
             limit=5
         )
+        logger.info(f"✅ Получено данные с {len(movers_data)} бирж")
+
         message = await format_movers(movers_data)
+        logger.info(f"Сообщение готово, длина: {len(message)} символов")
 
-        # Получаем всех пользователей
-        data = _load_raw()
-        all_users = [int(uid) for uid in data.keys() if uid.isdigit()]
+        # Получаем всех пользователей из белого списка
+        whitelist = get_whitelist()
+        logger.info(f"Белый список: {whitelist}")
+        logger.info(f"Отправляю моверс {len(whitelist)} пользователям")
 
-        logger.info(f"Отправляю моверс {len(all_users)} пользователям")
-
-        for uid in all_users:
+        sent = 0
+        failed = 0
+        for uid in whitelist:
             try:
+                logger.info(f"Отправляю сообщение пользователю {uid}...")
                 await context.bot.send_message(chat_id=uid, text=message, parse_mode="HTML")
                 logger.info(f"✅ Movers sent to {uid}")
+                sent += 1
             except Exception as e:
-                logger.warning(f"Failed to send movers to {uid}: {e}")
+                logger.exception(f"❌ Failed to send movers to {uid}: {type(e).__name__}: {e}")
+                failed += 1
 
+        logger.info(f"Результат: отправлено {sent}, ошибок {failed}")
         logger.info("=== DAILY MOVERS JOB FINISHED ===")
     except Exception as e:
-        logger.exception(f"Error in daily_movers_job: {e}")
+        logger.exception(f"❌ Error in daily_movers_job: {e}")
 
 
 async def background_scanner_job(context: ContextTypes.DEFAULT_TYPE) -> None:

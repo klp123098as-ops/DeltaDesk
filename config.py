@@ -49,3 +49,7 @@ REQUEST_TIMEOUT_MS = 15000
 
 # Мин. % арбитража по умолчанию (0 = показывать всё)
 DEFAULT_MIN_ARB_PCT = 0.0
+
+# Прокси для обхода географических блокировок (опционально)
+# Формат: http://ip:port или https://ip:port или socks5://ip:port
+PROXY_URL = os.getenv("PROXY_URL", "").strip()

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import ccxt.async_support as ccxt
 
-from config import REQUEST_TIMEOUT_MS
+from config import REQUEST_TIMEOUT_MS, PROXY_URL
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +43,25 @@ def _num(val) -> float | None:
 async def get_exchange_instance(exchange_id: str):
     if exchange_id in EXCHANGES_INSTANCES:
         return EXCHANGES_INSTANCES[exchange_id]
-    
+
     cls = getattr(ccxt, exchange_id, None)
     if not cls: return None
-    
+
     # Оптимизация для облака: переиспользование соединений и увеличенные таймауты
-    instance = cls({
-        "enableRateLimit": True, 
+    config = {
+        "enableRateLimit": True,
         "timeout": 30000,
-        "aiohttp_proxy": None,
         "options": {"defaultType": "spot"}
-    })
+    }
+
+    # Добавляем прокси, если установлен в переменных окружения
+    if PROXY_URL:
+        logger.info(f"Using proxy for {exchange_id}: {PROXY_URL[:30]}...")
+        config["aiohttp_proxy"] = PROXY_URL
+    else:
+        config["aiohttp_proxy"] = None
+
+    instance = cls(config)
     EXCHANGES_INSTANCES[exchange_id] = instance
     return instance
 
@@ -170,15 +178,26 @@ async def get_top_movers(exchanges: list[str] = None, limit: int = 3) -> dict:
 
     Пробует получить данные с максимум 3 доступных бирж.
     """
+    # Биржи, которые заблокированы на облачных серверах (Render)
+    BLOCKED_ON_RENDER = {"binance", "bybit"}
+
     if not exchanges:
-        # Порядок предпочтения: если одна не работает, пробуем другую
-        exchanges = ["okx", "kucoin", "gate", "mexc", "htx", "upbit", "bybit", "binance"]
+        # Порядок предпочтения: пропускаем заблокированные
+        all_exchanges = ["okx", "kucoin", "gate", "mexc", "htx", "upbit", "huobi", "coinex"]
+        exchanges = [e for e in all_exchanges if e not in BLOCKED_ON_RENDER]
+        # Добавляем в конец (для fallback, хотя скорее всего не сработают)
+        exchanges += list(BLOCKED_ON_RENDER)
 
     result = {}
     used_exchanges = set()
     max_exchanges = 3  # Максимум 3 биржи в результате
 
     for exchange in exchanges:
+        # Пропускаем заблокированные биржи
+        if exchange in BLOCKED_ON_RENDER:
+            logger.info(f"⏭️ Skipping {exchange} (blocked on Render)")
+            continue
+
         # Пробуем до 3 разных бирж (на случай, если несколько заблокированы)
         if len(used_exchanges) >= max_exchanges:
             logger.info(f"Got data from {len(used_exchanges)} exchanges, stopping")
