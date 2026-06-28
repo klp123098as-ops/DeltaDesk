@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import ccxt.async_support as ccxt
 
 from config import REQUEST_TIMEOUT_MS, PROXY_URL
+from profitability import calculate_net_profit, ProfitabilityResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,14 @@ EXCHANGES_INSTANCES = {}
 # Максимальный размер истории цен (очистка для предотвращения утечки памяти)
 MAX_PRICE_HISTORY_SIZE = 500
 PRICE_HISTORY_CLEANUP_INTERVAL = 3600  # очищать каждый час
+
+# Кеш комиссий бирж (чтобы не запрашивать часто)
+EXCHANGE_FEES_CACHE = {}
+FEES_CACHE_TTL = 86400  # 24 часа
+
+# Кеш статуса кошельков
+WALLET_STATUS_CACHE = {}
+WALLET_CACHE_TTL = 3600  # 1 час
 
 def _num(val) -> float | None:
     if val is None: return None
@@ -71,11 +80,16 @@ async def close_all_exchanges():
     EXCHANGES_INSTANCES.clear()
 
 async def fetch_prices(symbol: str, exchanges: list[str]) -> list[ExchangePrice]:
+    """Получает цены с разных бирж (bid/ask из orderbook)."""
     tasks = [_fetch_one_ccxt(eid, symbol) for eid in exchanges]
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 
 async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None:
+    """
+    Получает bid/ask из orderbook (вместо Last Price).
+    Это гарантирует реальные цены, по которым можно торговать.
+    """
     now = time.time()
     # Убираем блокировку FAILED_EXCHANGES для популярных бирж, чтобы всегда пробовать их
     popular_to_retry = ["binance", "bybit", "okx", "mexc", "bitget", "gate"]
@@ -92,10 +106,9 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
     
     for attempt in range(attempts):
         try:
-            # Загрузка рынков с кешем (таймаут 30 секунд!)
+            # Загрузка рынков с кешем
             cached_markets, ts = MARKETS_CACHE.get(exchange_id, (None, 0))
             if not cached_markets or (now - ts > MARKET_CACHE_TTL):
-                # Для ретрая увеличиваем таймаут
                 await asyncio.wait_for(ex.load_markets(), timeout=(30.0 + attempt * 10))
                 MARKETS_CACHE[exchange_id] = (ex.markets, now)
                 cached_markets = ex.markets
@@ -109,16 +122,36 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
                 else:
                     return None
 
-            # Запрос тикера (таймаут 15-20 секунд)
-            ticker = await asyncio.wait_for(ex.fetch_ticker(current_symbol), timeout=(15.0 + attempt * 5))
+            # === ГЛАВНОЕ ИЗМЕНЕНИЕ: Берём ORDERBOOK вместо Last Price ===
+            # Получаем стакан (ордербук) с ограничением
+            orderbook = await asyncio.wait_for(
+                ex.fetch_order_book(current_symbol, limit=5),
+                timeout=(15.0 + attempt * 5)
+            )
+            
+            # Извлекаем лучшую цену покупки (Bid) и продажи (Ask)
+            bids = orderbook.get("bids", [])
+            asks = orderbook.get("asks", [])
+            
+            bid = _num(bids[0][0]) if bids else None
+            ask = _num(asks[0][0]) if asks else None
+            
+            # Получаем Last Price из тикера для справки
+            ticker = await asyncio.wait_for(
+                ex.fetch_ticker(current_symbol),
+                timeout=(15.0 + attempt * 5)
+            )
+            last = _num(ticker.get("last"))
+            
             return ExchangePrice(
                 exchange=exchange_id,
                 symbol=current_symbol,
-                bid=_num(ticker.get("bid")),
-                ask=_num(ticker.get("ask")),
-                last=_num(ticker.get("last")),
+                bid=bid,
+                ask=ask,
+                last=last,
                 volume_24h=_num(ticker.get("quoteVolume")),
                 change_24h_pct=_num(ticker.get("percentage")),
+                source="orderbook"  # Отметили, что данные из orderbook
             )
         except Exception as e:
             if attempt == attempts - 1:
@@ -129,37 +162,222 @@ async def _fetch_one_ccxt(exchange_id: str, symbol: str) -> ExchangePrice | None
                 await asyncio.sleep(1 + attempt * 2)
     return None
 
-def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str] | None:
-    # Оставляем только те, где есть цены и нормальный объем (минимум $50,000 суточного объема)
+
+async def get_exchange_trading_fees(exchange_id: str) -> dict:
+    """
+    Получает комиссии биржи (Taker Fee).
+    Результаты кешируются на 24 часа.
+    """
+    now = time.time()
+    cached_fees, ts = EXCHANGE_FEES_CACHE.get(exchange_id, (None, 0))
+    
+    if cached_fees and (now - ts < FEES_CACHE_TTL):
+        return cached_fees
+
+    try:
+        ex = await get_exchange_instance(exchange_id)
+        if not ex:
+            return {"buy_taker": 0.1, "sell_taker": 0.1}  # Default fallback
+        
+        # Получаем информацию о комиссиях
+        if hasattr(ex, "describe"):
+            desc = ex.describe()
+            fees = desc.get("fees", {})
+            
+            buy_fee = fees.get("trading", {}).get("maker", 0.1)
+            sell_fee = fees.get("trading", {}).get("taker", 0.1)
+            
+            result = {
+                "buy_taker": float(buy_fee),
+                "sell_taker": float(sell_fee)
+            }
+        else:
+            result = {"buy_taker": 0.1, "sell_taker": 0.1}
+        
+        EXCHANGE_FEES_CACHE[exchange_id] = (result, now)
+        logger.info(f"Fees for {exchange_id}: buy={result['buy_taker']}%, sell={result['sell_taker']}%")
+        return result
+        
+    except Exception as e:
+        logger.warning(f"Failed to get fees for {exchange_id}: {e}")
+        return {"buy_taker": 0.1, "sell_taker": 0.1}  # Default fallback
+
+
+async def check_wallet_status(exchange_id: str, symbol: str) -> dict:
+    """
+    Проверяет статус вывода/ввода кошельков для монеты на бирже.
+    
+    Returns:
+        {
+            "can_withdraw": bool,
+            "can_deposit": bool,
+            "status": str  # "ok", "maintenance", "unknown"
+        }
+    """
+    cache_key = f"{exchange_id}:{symbol}"
+    now = time.time()
+    cached_status, ts = WALLET_STATUS_CACHE.get(cache_key, (None, 0))
+    
+    if cached_status and (now - ts < WALLET_CACHE_TTL):
+        return cached_status
+
+    try:
+        ex = await get_exchange_instance(exchange_id)
+        if not ex:
+            return {"can_withdraw": True, "can_deposit": True, "status": "unknown"}
+        
+        # Получаем информацию о валютах
+        currencies = await ex.fetch_currencies()
+        
+        # Ищем монету (symbol может быть "BTC" или "BTC/USDT")
+        base = symbol.split("/")[0].upper()
+        
+        if base in currencies:
+            currency = currencies[base]
+            active = currency.get("active", True)
+            
+            # Проверяем статус вывода/ввода
+            limits = currency.get("limits", {})
+            withdraw_enabled = limits.get("withdraw", {}).get("enabled", True)
+            deposit_enabled = limits.get("deposit", {}).get("enabled", True)
+            
+            status_result = {
+                "can_withdraw": active and withdraw_enabled,
+                "can_deposit": active and deposit_enabled,
+                "status": "ok" if active else "maintenance"
+            }
+        else:
+            # Монета не найдена на бирже
+            status_result = {
+                "can_withdraw": False,
+                "can_deposit": False,
+                "status": "unknown"
+            }
+        
+        WALLET_STATUS_CACHE[cache_key] = (status_result, now)
+        logger.info(f"Wallet status for {base} on {exchange_id}: withdraw={status_result['can_withdraw']}, deposit={status_result['can_deposit']}")
+        return status_result
+        
+    except Exception as e:
+        logger.warning(f"Failed to check wallet status for {exchange_id}/{symbol}: {e}")
+        return {"can_withdraw": True, "can_deposit": True, "status": "unknown"}
+
+
+async def calc_arbitrage_new(
+    prices: list[ExchangePrice],
+    investment_amount: float = 1000.0,
+    network_fee_usd: float = 1.0,
+    min_profit_pct: float = 2.0
+) -> tuple[ProfitabilityResult, str, str] | None:
+    """
+    Рассчитывает профитность арбитража на основе реальных цен из orderbook.
+    
+    Возвращает: (ProfitabilityResult, buy_exchange, sell_exchange) или None
+    
+    Проверяет:
+    1. Bid/Ask из orderbook (не Last Price)
+    2. Реальные комиссии бирж (fetch_currencies/fees)
+    3. Статус кошельков (allowWithdraw, allowDeposit)
+    4. Чистая прибыль >= 2% (жесткий фильтр)
+    """
+    # Оставляем только те, где есть цены и нормальный объем
     valid = [p for p in prices if p.bid and p.ask and (p.volume_24h or 0) > 50000]
-    if len(valid) < 2: return None
+    if len(valid) < 2:
+        return None
     
-    best_pair = None
-    max_pct = -999.0
-    
-    # Средняя комиссия биржи (Taker) — примерно 0.1% на покупку и 0.1% на продажу
-    # Итого на круг уходит ~0.2%
-    FEE_ESTIMATE = 0.2
+    best_result = None
+    best_exchange_pair = None
     
     # Ищем лучшую пару среди РАЗНЫХ бирж
     for i in range(len(valid)):
         for j in range(len(valid)):
             if i == j: continue 
             
-            ex_buy = valid[i]  # Покупаем по Ask
-            ex_sell = valid[j] # Продаем по Bid
+            ex_buy = valid[i]    # Покупаем по Ask
+            ex_sell = valid[j]   # Продаем по Bid
+            
+            if ex_buy.ask <= 0 or ex_sell.bid <= 0:
+                continue
+            
+            # === ПРОВЕРЯЕМ СТАТУС КОШЕЛЬКОВ ===
+            # Биржа A (покупка): нужен открытый вывод
+            wallet_buy = await check_wallet_status(ex_buy.exchange, ex_buy.symbol)
+            if not wallet_buy["can_withdraw"]:
+                logger.warning(f"⚠️ Cannot withdraw {ex_buy.symbol} from {ex_buy.exchange.upper()}: {wallet_buy['status']}")
+                continue
+            
+            # Биржа B (продажа): нужен открытый ввод
+            wallet_sell = await check_wallet_status(ex_sell.exchange, ex_sell.symbol)
+            if not wallet_sell["can_deposit"]:
+                logger.warning(f"⚠️ Cannot deposit {ex_sell.symbol} to {ex_sell.exchange.upper()}: {wallet_sell['status']}")
+                continue
+            
+            # === ПОЛУЧАЕМ РЕАЛЬНЫЕ КОМИССИИ ===
+            fees_buy = await get_exchange_trading_fees(ex_buy.exchange)
+            fees_sell = await get_exchange_trading_fees(ex_sell.exchange)
+            
+            # === РАССЧИТЫВАЕМ ПРОФИТНОСТЬ ===
+            result = calculate_net_profit(
+                buy_price=ex_buy.ask,
+                sell_price=ex_sell.bid,
+                buy_exchange=ex_buy.exchange,
+                sell_exchange=ex_sell.exchange,
+                buy_taker_fee_pct=fees_buy["buy_taker"],
+                sell_taker_fee_pct=fees_sell["sell_taker"],
+                network_fee_usd=network_fee_usd,
+                investment_amount=investment_amount,
+                min_profit_pct=min_profit_pct
+            )
+            
+            # Логируем только профитные связки
+            if result.is_profitable:
+                logger.info(f"✅ PROFITABLE: {ex_buy.symbol} {ex_buy.exchange.upper()} → {ex_sell.exchange.upper()}: {result.net_profit_pct:.4f}%")
+            
+            # Выбираем лучшую профитную связку
+            if result.is_profitable:
+                if best_result is None or result.net_profit_pct > best_result.net_profit_pct:
+                    best_result = result
+                    best_exchange_pair = (ex_buy.exchange, ex_sell.exchange)
+    
+    if best_result and best_exchange_pair:
+        return (best_result, best_exchange_pair[0], best_exchange_pair[1])
+    
+    return None
+
+
+# === LEGACY COMPATIBILITY (для старого кода) ===
+def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str] | None:
+    """
+    DEPRECATED: Используй calc_arbitrage_new() вместо этого!
+    
+    Это оставлено для обратной совместимости с форматированием.
+    """
+    valid = [p for p in prices if p.bid and p.ask and (p.volume_24h or 0) > 50000]
+    if len(valid) < 2:
+        return None
+    
+    best_pair = None
+    max_pct = -999.0
+    
+    for i in range(len(valid)):
+        for j in range(len(valid)):
+            if i == j: continue 
+            
+            ex_buy = valid[i]
+            ex_sell = valid[j]
             
             if ex_buy.ask <= 0: continue
             
+            # Упрощенный расчет (без реальных комиссий)
             profit = ex_sell.bid - ex_buy.ask
-            # Вычитаем комиссии из процента прибыли
-            pct = ((profit / ex_buy.ask) * 100) - FEE_ESTIMATE
+            pct = ((profit / ex_buy.ask) * 100) - 0.2  # Примерно 0.2% комиссий
             
             if pct > max_pct:
                 max_pct = pct
                 best_pair = (profit, pct, ex_buy.exchange, ex_sell.exchange)
     
     return best_pair
+
 
 import aiohttp
 
@@ -313,18 +531,21 @@ def _cleanup_price_history():
         LAST_PRICE_HISTORY_CLEANUP = now
 
 async def scan_top_arbitrage(bases: list[str], exchanges: list[str], min_arb_pct: float = 0.0):
+    """Сканирует арбитраж используя НОВЫЙ calc_arbitrage_new с жесткой фильтрацией."""
     async def _scan(base):
         symbol = f"{base}/USDT"
         prices = await fetch_prices(symbol, exchanges)
-        arb = calc_arbitrage(prices)
-        # Если порог 0 (Все%), показываем всё, где есть цена на 2+ биржах
-        if arb and (min_arb_pct <= 0 or arb[1] >= min_arb_pct):
-            return (base, *arb)
+        arb = await calc_arbitrage_new(prices, min_profit_pct=min_arb_pct)
+        
+        if arb:
+            result_obj, buy_ex, sell_ex = arb
+            # Возвращаем совместимый с форматом формат
+            return (base, result_obj.net_profit_usd, result_obj.net_profit_pct, buy_ex, sell_ex)
         return None
 
     results = await asyncio.gather(*[_scan(b) for b in bases])
     valid = [r for r in results if r]
-    valid.sort(key=lambda x: x[2], reverse=True)
+    valid.sort(key=lambda x: x[2], reverse=True)  # Сортируем по % прибыли
     return valid
 
 async def get_new_signals(bases: list[str], exchanges: list[str], min_pct: float):
@@ -333,14 +554,14 @@ async def get_new_signals(bases: list[str], exchanges: list[str], min_pct: float
     new_signals = []
     now = time.time()
     
-    for base, profit, pct, buy_ex, sell_ex in items:
+    for base, profit_usd, pct, buy_ex, sell_ex in items:
         last_pct, last_ts = LAST_SIGNALS.get(base, (0.0, 0))
         # Условия для отправки сигнала:
         # 1. Арбитраж выше порога пользователя
         # 2. Монета новая ИЛИ прошло более 15 минут ИЛИ процент вырос на 0.3%+
         if pct >= min_pct:
             if (now - last_ts > 900) or (pct > last_pct + 0.3):
-                new_signals.append((base, profit, pct, buy_ex, sell_ex))
+                new_signals.append((base, profit_usd, pct, buy_ex, sell_ex))
                 LAST_SIGNALS[base] = (pct, now)
                 
     return new_signals
@@ -375,7 +596,7 @@ async def get_price_jumps(bases: list[str], threshold_pct: float = 3.0):
                 jumps.append((base, change, p.last))
         
         PRICE_HISTORY[base] = p.last
-            
+             
     return jumps
 
 def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: float = 0.0) -> str:
@@ -414,8 +635,8 @@ def format_top_arbitrage(items: list, min_arb_pct: float) -> str:
         return "📊 <b>Топ арбитраж</b>\n\nВыгодных связок прямо сейчас нет. Попробуйте позже или добавьте больше бирж."
 
     lines = ["📊 <b>Топ арбитраж</b>", ""]
-    for base, profit, pct, buy_ex, sell_ex in display_items:
-        lines.append(f"• <b>{base}</b>: <code>{pct:.2f}%</code> ({buy_ex.upper()} → {sell_ex.upper()})")
+    for base, profit_usd, pct, buy_ex, sell_ex in display_items:
+        lines.append(f"• <b>{base}</b>: <code>{pct:.2f}%</code> (${profit_usd:.2f}) {buy_ex.upper()} → {sell_ex.upper()}")
     return "\n".join(lines)
 
 def normalize_symbol(text: str) -> str:
