@@ -1,7 +1,4 @@
-"""
-Модуль для расчета чистой прибыли арбитража.
-Учитывает все комиссии и гарантирует только реально выгодные связки.
-"""
+"""Модуль для расчета чистой прибыли арбитража. Учитывает все комиссии и гарантирует только реально выгодные связки."""
 
 from dataclasses import dataclass
 import logging
@@ -45,7 +42,7 @@ class ProfitabilityResult:
             f"<b>Результат:</b>",
             f"• Валовая прибыль: ${self.gross_profit_usd:.4f}",
             f"• Чистая прибыль: ${self.net_profit_usd:.4f}",
-            f"• Процент: {self.net_profit_pct:.4f}%",
+            f"• Процент: {self.net_profit_pct:.2f}%",
             f"",
             f"{'✅ ПРОХОДИТ' if self.is_profitable else '❌ НЕ ПРОХОДИТ'}",
         ]
@@ -61,7 +58,7 @@ def calculate_net_profit(
     sell_taker_fee_pct: float = 0.1,  # 0.1%
     network_fee_usd: float = 1.0,  # $1
     investment_amount: float = 1000.0,
-    min_profit_pct: float = 2.0,
+    min_profit_pct: float = 0.5,  # 0.5% минимум
 ) -> ProfitabilityResult:
     """
     Расчет чистой прибыли арбитража.
@@ -81,23 +78,45 @@ def calculate_net_profit(
         ProfitabilityResult с полной информацией о расчетах
     """
     
+    # Валидация: проверяем на невалидные данные
+    if not (buy_price > 0 and sell_price > 0 and investment_amount > 0):
+        logger.warning(f"Invalid prices: buy={buy_price}, sell={sell_price}, inv={investment_amount}")
+        return ProfitabilityResult(
+            is_profitable=False,
+            net_profit_usd=0,
+            net_profit_pct=0,
+            gross_profit_usd=0,
+            investment_amount=investment_amount,
+            buy_price=buy_price,
+            sell_price=sell_price,
+            buy_exchange=buy_exchange,
+            sell_exchange=sell_exchange,
+            buy_fee_usd=0,
+            sell_fee_usd=0,
+            network_fee_usd=network_fee_usd,
+            total_fees_usd=0,
+        )
+    
     # ЭТАП 1: Рассчитываем, сколько коинов мы можем купить
     coins_bought = investment_amount / buy_price
     
     # ЭТАП 2: Вычитаем комиссию покупки (Taker Fee)
-    buy_fee_pct_decimal = buy_taker_fee_pct / 100  # Переводим проценты в decimal
+    buy_fee_pct_decimal = buy_taker_fee_pct / 100
     buy_fee_usd = investment_amount * buy_fee_pct_decimal
-    amount_after_buy_fee = investment_amount - buy_fee_usd
     
-    # ЭТАП 3: Вычитаем сетевую комиссию (газ за вывод)
-    amount_after_network = amount_after_buy_fee - network_fee_usd
+    # Коины после вычета комиссии покупки
+    coins_after_buy_fee = coins_bought * (1 - buy_fee_pct_decimal)
+    
+    # ЭТАП 3: Вычитаем сетевую комиссию (газ за вывод) в коинах
+    network_fee_coins = network_fee_usd / sell_price  # Конвертируем USD в коины по цене продажи
+    coins_after_network = coins_after_buy_fee - network_fee_coins
     
     # Если сетевая комиссия съела прибыль — не выгодно
-    if amount_after_network <= 0:
+    if coins_after_network <= 0:
         return ProfitabilityResult(
             is_profitable=False,
-            net_profit_usd=amount_after_network,
-            net_profit_pct=(amount_after_network / investment_amount * 100) if investment_amount > 0 else -100,
+            net_profit_usd=-investment_amount,
+            net_profit_pct=-100,
             gross_profit_usd=0,
             investment_amount=investment_amount,
             buy_price=buy_price,
@@ -110,8 +129,8 @@ def calculate_net_profit(
             total_fees_usd=buy_fee_usd + network_fee_usd,
         )
     
-    # ЭТАП 4: Конвертируем обратно в USD по цене продажи
-    amount_in_usd = amount_after_network * sell_price
+    # ЭТАП 4: Конвертируем коины обратно в USD по цене продажи
+    amount_in_usd = coins_after_network * sell_price
     
     # ЭТАП 5: Вычитаем комиссию продажи (Taker Fee)
     sell_fee_pct_decimal = sell_taker_fee_pct / 100
@@ -119,18 +138,24 @@ def calculate_net_profit(
     net_revenue = amount_in_usd - sell_fee_usd
     
     # ИТОГОВЫЙ РАСЧЕТ
-    gross_profit_usd = sell_price - buy_price  # Разница цен
+    gross_profit_usd = (sell_price - buy_price) * coins_bought
     net_profit_usd = net_revenue - investment_amount
     net_profit_pct = (net_profit_usd / investment_amount * 100) if investment_amount > 0 else 0
     total_fees_usd = buy_fee_usd + network_fee_usd + sell_fee_usd
     
-    # Проверяем фильтр
-    is_profitable = net_profit_pct >= min_profit_pct
+    # Жесткий фильтр: убираем явно неправильные результаты (> 50% невозможны)
+    if net_profit_pct > 50:
+        logger.warning(f"Unrealistic profit {net_profit_pct}% for {buy_exchange}→{sell_exchange}. Filtering out.")
+        net_profit_pct = 0
+        is_profitable = False
+    else:
+        # Проверяем фильтр
+        is_profitable = net_profit_pct >= min_profit_pct
     
     return ProfitabilityResult(
         is_profitable=is_profitable,
-        net_profit_usd=net_profit_usd,
-        net_profit_pct=net_profit_pct,
+        net_profit_usd=max(net_profit_usd, 0),  # Не отрицательная прибыль
+        net_profit_pct=max(net_profit_pct, 0),  # Не отрицательный процент
         gross_profit_usd=gross_profit_usd,
         investment_amount=investment_amount,
         buy_price=buy_price,
