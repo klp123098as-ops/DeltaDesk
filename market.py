@@ -348,11 +348,10 @@ async def calc_arbitrage_new(
 # === LEGACY COMPATIBILITY (для старого кода) ===
 def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str] | None:
     """
-    DEPRECATED: Используй calc_arbitrage_new() вместо этого!
-    
-    Это оставлено для обратной совместимости с форматированием.
+    Рассчитывает лучшую пару арбитража, учитывая примерные комиссии (0.3% на круг).
+    Показывает только связки с чистым профитом ≥ 0.1%
     """
-    valid = [p for p in prices if p.bid and p.ask and (p.volume_24h or 0) > 50000]
+    valid = [p for p in prices if p.bid and p.ask and (p.volume_24h or 0) > 10000]
     if len(valid) < 2:
         return None
     
@@ -363,16 +362,16 @@ def calc_arbitrage(prices: list[ExchangePrice]) -> tuple[float, float, str, str]
         for j in range(len(valid)):
             if i == j: continue 
             
-            ex_buy = valid[i]
-            ex_sell = valid[j]
+            ex_buy = valid[i]  # Покупка по Ask
+            ex_sell = valid[j] # Продажа по Bid
             
-            if ex_buy.ask <= 0: continue
+            if ex_buy.ask <= 0 or ex_sell.bid <= 0: continue
             
-            # Упрощенный расчет (без реальных комиссий)
+            # Учитываем ~0.3% комиссий на круг
             profit = ex_sell.bid - ex_buy.ask
-            pct = ((profit / ex_buy.ask) * 100) - 0.2  # Примерно 0.2% комиссий
+            pct = ((profit / ex_buy.ask) * 100) - 0.3
             
-            if pct > max_pct:
+            if pct > max_pct and pct > -0.5:  # Не показывать явно убыточные
                 max_pct = pct
                 best_pair = (profit, pct, ex_buy.exchange, ex_sell.exchange)
     
@@ -599,44 +598,95 @@ async def get_price_jumps(bases: list[str], threshold_pct: float = 3.0):
              
     return jumps
 
-def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: float = 0.0) -> str:
-    if not prices: return f"❌ {symbol} не найден"
+# Рекомендуемые сети для переводов между биржами
+RECOMMENDED_NETWORKS = {
+    ("okx", "mexc"): "TRC20 (USDT)",
+    ("mexc", "okx"): "TRC20 (USDT)",
+    ("okx", "bitget"): "TRC20 (USDT)",
+    ("bitget", "okx"): "TRC20 (USDT)",
+    ("okx", "gate"): "TRC20 (USDT)",
+    ("gate", "okx"): "TRC20 (USDT)",
+    ("okx", "kucoin"): "TRC20 (USDT)",
+    ("kucoin", "okx"): "TRC20 (USDT)",
+    ("mexc", "bitget"): "TRC20 (USDT)",
+    ("bitget", "mexc"): "TRC20 (USDT)",
+    ("mexc", "gate"): "TRC20 (USDT)",
+    ("gate", "mexc"): "TRC20 (USDT)",
+    ("mexc", "kucoin"): "TRC20 (USDT)",
+    ("kucoin", "mexc"): "TRC20 (USDT)",
+    ("bitget", "gate"): "TRC20 (USDT)",
+    ("gate", "bitget"): "TRC20 (USDT)",
+    ("bitget", "kucoin"): "TRC20 (USDT)",
+    ("kucoin", "bitget"): "TRC20 (USDT)",
+    ("gate", "kucoin"): "TRC20 (USDT)",
+    ("kucoin", "gate"): "TRC20 (USDT)",
+}
 
-    arb = calc_arbitrage(prices)
-    lines = [f"<b>{symbol}</b>"]
+def get_recommended_network(buy_ex: str, sell_ex: str) -> str:
+    """Получает рекомендованную сеть для перевода между биржами."""
+    key = (buy_ex.lower(), sell_ex.lower())
+    return RECOMMENDED_NETWORKS.get(key, "TRC20 (USDT) (рекомендовано)")
 
+
+async def format_price_table(symbol: str, prices: list[ExchangePrice], min_arb_pct: float = 0.0) -> str:
+    if not prices: 
+        return f"❌ <b>{symbol}</b>\n\nМонета не найдена на выбранных биржах.\nПроверь написание или добавь больше бирж."
+
+    lines = [f"📈 <b>{symbol}</b>", ""]
+
+    # Используем новую функцию calc_arbitrage_new
+    arb = await calc_arbitrage_new(prices, min_profit_pct=min_arb_pct)
+    
     if arb:
-        profit, pct, buy_ex, sell_ex = arb
-        # Показываем арбитраж ТОЛЬКО если он положительный (> 0.01%)
-        if pct > 0.01:
-            lines.append(f"🟢 Арбитраж: <b>{pct:.2f}%</b>")
-            lines.append(f"   {buy_ex.upper()} → {sell_ex.upper()}")
-            lines.append("") # Пустая строка только если есть арбитраж
+        result, buy_ex, sell_ex = arb
+        if result.is_profitable:
+            lines.append(f"✅ <b>ПРОФИТАБЕЛЬНЫЙ АРБИТРАЖ!</b>")
+            lines.append(f"   📈 Чистый профит: <code>{result.net_profit_pct:.2f}%</code> (${result.net_profit_usd:.2f} на $1000)")
+            lines.append(f"   🛒 Купить на: <b>{buy_ex.upper()}</b> по ${result.buy_price:.2f}")
+            lines.append(f"   💸 Продать на: <b>{sell_ex.upper()}</b> по ${result.sell_price:.2f}")
+            lines.append(f"   🔗 Рекомендованная сеть: <code>{get_recommended_network(buy_ex, sell_ex)}</code>")
+            lines.append(f"   💵 Всего комиссий: ${result.total_fees_usd:.2f}")
+            lines.append("")
+        else:
+            lines.append(f"⚠️ Арбитраж есть, но НЕ выгодный (комиссии съедают прибыль)")
+            lines.append(f"   Потенциальный профит без комиссий: ${result.gross_profit_usd:.2f}")
+            lines.append(f"   Но комиссии составляют: ${result.total_fees_usd:.2f}")
+            lines.append("")
 
     # Сортируем: сначала самые дорогие (лучшие для продажи), потом дешевые
     sorted_prices = sorted(prices, key=lambda x: x.last or 0, reverse=True)
+    lines.append("<b>Цены по биржам:</b>")
     for p in sorted_prices:
         buy_str = f"{p.ask:g}" if p.ask else "?"
         sell_str = f"{p.bid:g}" if p.bid else "?"
         lines.append(f"• {p.exchange.upper()}")
-        lines.append(f"  Покупка <code>{buy_str}</code>")
-        lines.append(f"  Продажа <code>{sell_str}</code>")
+        lines.append(f"  Купить (Ask): <code>{buy_str}</code>")
+        lines.append(f"  Продать (Bid): <code>{sell_str}</code>")
     return "\n".join(lines)
 
+
 def format_top_arbitrage(items: list, min_arb_pct: float) -> str:
-    if not items: return "Ничего не найдено"
+    if not items: 
+        return "📊 <b>Топ арбитраж</b>\n\nВыгодных связок прямо сейчас нет.\nПопробуй позже или добавь больше бирж."
     
-    # Оставляем только РЕАЛЬНО выгодные связки (> 0.01%)
-    # Если пользователь сам поставил порог выше (например 0.33), используем его
-    threshold = max(0.01, min_arb_pct)
+    threshold = max(0.1, min_arb_pct)
     display_items = [it for it in items if it[2] >= threshold]
 
     if not display_items: 
-        return "📊 <b>Топ арбитраж</b>\n\nВыгодных связок прямо сейчас нет. Попробуйте позже или добавьте больше бирж."
+        return "📊 <b>Топ арбитраж</b>\n\nВыгодных связок прямо сейчас нет.\nПопробуй позже или добавь больше бирж."
 
     lines = ["📊 <b>Топ арбитраж</b>", ""]
-    for base, profit_usd, pct, buy_ex, sell_ex in display_items:
-        lines.append(f"• <b>{base}</b>: <code>{pct:.2f}%</code> (${profit_usd:.2f}) {buy_ex.upper()} → {sell_ex.upper()}")
+    lines.append("<b>Лучшие возможности:</b>")
+    for i, (base, profit_usd, pct, buy_ex, sell_ex) in enumerate(display_items[:5], 1):  # Показываем топ-5
+        lines.append(f"{i}. <b>{base}</b>")
+        lines.append(f"   📈 Профит: <code>{pct:.2f}%</code> (${profit_usd:.2f} на $1000)")
+        lines.append(f"   🛒 Купить: <b>{buy_ex.upper()}</b>")
+        lines.append(f"   💸 Продать: <b>{sell_ex.upper()}</b>")
+        lines.append(f"   🔗 Сеть: <code>{get_recommended_network(buy_ex, sell_ex)}</code>")
+        if i < len(display_items[:5]):
+            lines.append("")
+    if len(display_items) > 5:
+        lines.append(f"\n<i>И еще {len(display_items) - 5} возможностей...</i>")
     return "\n".join(lines)
 
 def normalize_symbol(text: str) -> str:

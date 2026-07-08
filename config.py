@@ -24,15 +24,14 @@ PORT = int(os.getenv("PORT", "8080"))
 DATA_DIR = Path(os.getenv("DATA_DIR", ".")).resolve()
 SETTINGS_FILE = DATA_DIR / "user_data.json"
 
-# Биржи, доступные в Беларуси (Binance, Bybit, OKX, MEXC, Bitget, BingX, Gate)
+# Биржи, стабильно работающие на Render (без Binance/Bybit, т.к. они блокируют облака)
 DEFAULT_EXCHANGES = [
-    "binance",
-    "bybit",
     "okx",
     "mexc",
     "bitget",
     "bingx",
     "gate",
+    "kucoin"
 ]
 
 # Список монет для расширенного сканирования (Топ арбитраж)
@@ -47,8 +46,8 @@ SCAN_COINS = [
 # 15 сек — оптимальный баланс между скоростью и надежностью
 REQUEST_TIMEOUT_MS = 15000
 
-# Мин. % арбитража по умолчанию (0 = показывать всё)
-DEFAULT_MIN_ARB_PCT = 0.0
+# Мин. % арбитража по умолчанию (чтобы не показывать убыточные связки)
+DEFAULT_MIN_ARB_PCT = 0.5
 
 # Прокси для обхода географических блокировок (опционально)
 # Формат: http://ip:port или https://ip:port или socks5://ip:port

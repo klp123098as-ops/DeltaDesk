@@ -80,22 +80,29 @@ logger = logging.getLogger(__name__)
 HELP_TEXT = """
 🤖 <b>DeltaDesk — твой крипто-сканер</b>
 
-<b>Команды:</b>
-/price BTC — цена на всех биржах
-/top — лучший арбитраж прямо сейчас
-/alert BTC 65000 — уведомление по цене
-/analyze BTC — тех. анализ + Индекс Страха
+📋 <b>Основные команды:</b>
+/price [монета] — показать цены на всех биржах
+/top — топ самых выгодных связок арбитража
+/dex [сеть] — новые токены на DEX (Solana/TON)
+/alert [монета] [цена] — создать уведомление по цене
+/analyze [монета] — тех анализ + индекс страха/жадности
 
-<b>Настройки:</b>
-/signals on/off — авто-уведомления (фон)
-/min 0.3 — порог арбитража в %
-/exchanges — управление биржами
-/all_exchanges — список всех 100+ бирж
+⚙️ <b>Настройки:</b>
+/signals [on/off] — включить/выключить автоматические сигналы
+/min [процент] — установить минимальный порог арбитража %
+/exchanges — управлять списком бирж
+/me — твой ID и статус
+/help — эта справка
 
-<b>Админ (если доступно):</b>
-/allow ID — дать доступ
-/deny ID — закрыть доступ
-/whitelist — список пользователей
+👑 <b>Админ-команды (только для админа):</b>
+/allow [ID] — добавить пользователя в белый список
+/deny [ID] — удалить из белого списка
+/whitelist — показать список пользователей
+
+💡 <b>Советы:</b>
+• Начни с /start — запустится меню и подсказки команд
+• Добавь больше бирж для лучшего сканирования
+• Установи разумный порог (не менее 0.5%)
 
 Просто нажми / и выбери команду!
 """.strip()
@@ -110,20 +117,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not is_user_allowed(uid):
         await update.message.reply_text(
-            f"⛔️ Доступ ограничен.\n\nВаш ID: <code>{uid}</code>\n"
-            "Передайте этот ID владельцу бота для получения доступа.",
+            f"⛔️ <b>Доступ ограничен</b>\n\n"
+            f"Ваш ID: <code>{uid}</code>\n"
+            "Передайте этот ID владельцу бота, чтобы получить доступ.",
             parse_mode="HTML"
         )
         return
 
+    welcome = (
+        f"👋 <b>Привет, {user.first_name}!</b>\n\n"
+        "Я — DeltaDesk, твой помощник в мире криптовалют.\n"
+        "Я сканирую цены и ищу возможности для арбитража.\n\n"
+    )
+
     await update.message.reply_text(
-        "Привет! Сравниваю цены на биржах и ищу арбитраж.\n\n" + HELP_TEXT,
+        welcome + HELP_TEXT,
         reply_markup=reply_panel_keyboard(),
         parse_mode="HTML",
     )
     await update.message.reply_text(
-        "Быстрый доступ — кнопки ниже 👇",
+        "💬 <b>Быстрый доступ:</b>\nИспользуй кнопки ниже 👇",
         reply_markup=main_menu_keyboard(),
+        parse_mode="HTML"
     )
 
 
@@ -875,7 +890,7 @@ async def _send_prices(update: Update, coin: str, edit: bool = False) -> None:
         min_pct = get_min_arb_pct(uid)
         exchanges = get_user_exchanges(uid)
         rows = await fetch_prices(symbol, exchanges)
-        text = format_price_table(symbol, rows, min_arb_pct=min_pct)
+        text = await format_price_table(symbol, rows, min_arb_pct=min_pct)
         kb = price_actions_keyboard(base)
         await wait.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except ValueError as exc:
@@ -991,9 +1006,12 @@ def build_app() -> Application:
         # Фоновое сканирование алертов каждые 3 минуты
         app.job_queue.run_repeating(background_scanner_job, interval=180, first=10)
 
-        # Ежедневная рассылка топ монет в 21:50 МСК (18:50 UTC)
+        # Ежедневная рассылка топ монет в 17:00 МСК (14:00 UTC)
+        # Как изменить время:
+        # hour=... - Час в UTC (МСК = UTC+3, т.е. 14:00 UTC = 17:00 МСК)
+        # minute=... - Минута
         from datetime import time
-        app.job_queue.run_daily(daily_movers_job, time=time(hour=18, minute=50))
+        app.job_queue.run_daily(daily_movers_job, time=time(hour=14, minute=00))
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
