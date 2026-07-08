@@ -1,0 +1,9 @@
+.venv
+__pycache__
+.env
+*.pyc
+.git
+setup.bat
+start.bat
+README.md
+DEPLOY_FREE.md

@@ -1,0 +1,15 @@
+{
+  "6415957858": {
+    "exchanges": [
+      "binance",
+      "bybit",
+      "okx",
+      "kraken",
+      "kucoin",
+      "gate",
+      "mexc",
+      "bitget"
+    ],
+    "min_arb_pct": 0.0
+  }
+}
