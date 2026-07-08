@@ -26,6 +26,10 @@ def _load_raw() -> dict:
         if "whitelist" not in data:
             data["whitelist"] = [ADMIN_ID] if ADMIN_ID else []
             _save_raw(data)
+        elif ADMIN_ID and ADMIN_ID not in data["whitelist"]:
+            # Убедимся, что админ всегда в белом списке
+            data["whitelist"].append(ADMIN_ID)
+            _save_raw(data)
         return data
     except (json.JSONDecodeError, OSError):
         default_data = {"whitelist": [ADMIN_ID] if ADMIN_ID else []}

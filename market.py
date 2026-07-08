@@ -170,29 +170,37 @@ async def get_exchange_trading_fees(exchange_id: str) -> dict:
     """
     now = time.time()
     cached_fees, ts = EXCHANGE_FEES_CACHE.get(exchange_id, (None, 0))
-
+    
     if cached_fees and (now - ts < FEES_CACHE_TTL):
         return cached_fees
 
     try:
         ex = await get_exchange_instance(exchange_id)
         if not ex:
-            return {"buy_taker": 0.1, "sell_taker": 0.1}
-
+            return {"buy_taker": 0.1, "sell_taker": 0.1}  # Default fallback
+        
+        # Получаем информацию о комиссиях
         if hasattr(ex, "describe"):
             desc = ex.describe()
             fees = desc.get("fees", {})
+            
             buy_fee = fees.get("trading", {}).get("maker", 0.1)
             sell_fee = fees.get("trading", {}).get("taker", 0.1)
-            result = {"buy_taker": float(buy_fee), "sell_taker": float(sell_fee)}
+            
+            result = {
+                "buy_taker": float(buy_fee),
+                "sell_taker": float(sell_fee)
+            }
         else:
             result = {"buy_taker": 0.1, "sell_taker": 0.1}
-
+        
         EXCHANGE_FEES_CACHE[exchange_id] = (result, now)
+        logger.info(f"Fees for {exchange_id}: buy={result['buy_taker']}%, sell={result['sell_taker']}%")
         return result
-
-    except Exception:
-        return {"buy_taker": 0.1, "sell_taker": 0.1}
+        
+    except Exception as e:
+        logger.warning(f"Failed to get fees for {exchange_id}: {e}")
+        return {"buy_taker": 0.1, "sell_taker": 0.1}  # Default fallback
 
 
 async def check_wallet_status(exchange_id: str, symbol: str) -> dict:
@@ -217,28 +225,41 @@ async def check_wallet_status(exchange_id: str, symbol: str) -> dict:
         ex = await get_exchange_instance(exchange_id)
         if not ex:
             return {"can_withdraw": True, "can_deposit": True, "status": "unknown"}
-
+        
+        # Получаем информацию о валютах
         currencies = await ex.fetch_currencies()
+        
+        # Ищем монету (symbol может быть "BTC" или "BTC/USDT")
         base = symbol.split("/")[0].upper()
-
+        
         if base in currencies:
             currency = currencies[base]
             active = currency.get("active", True)
+            
+            # Проверяем статус вывода/ввода
             limits = currency.get("limits", {})
             withdraw_enabled = limits.get("withdraw", {}).get("enabled", True)
             deposit_enabled = limits.get("deposit", {}).get("enabled", True)
+            
             status_result = {
                 "can_withdraw": active and withdraw_enabled,
                 "can_deposit": active and deposit_enabled,
                 "status": "ok" if active else "maintenance"
             }
         else:
-            status_result = {"can_withdraw": False, "can_deposit": False, "status": "unknown"}
-
+            # Монета не найдена на бирже
+            status_result = {
+                "can_withdraw": False,
+                "can_deposit": False,
+                "status": "unknown"
+            }
+        
         WALLET_STATUS_CACHE[cache_key] = (status_result, now)
+        logger.info(f"Wallet status for {base} on {exchange_id}: withdraw={status_result['can_withdraw']}, deposit={status_result['can_deposit']}")
         return status_result
-
-    except Exception:
+        
+    except Exception as e:
+        logger.warning(f"Failed to check wallet status for {exchange_id}/{symbol}: {e}")
         return {"can_withdraw": True, "can_deposit": True, "status": "unknown"}
 
 
@@ -481,20 +502,18 @@ async def format_movers(movers_data: dict) -> str:
 
 
 async def get_fear_greed_index() -> str:
-    """Получает индекс страха и жадности с CoinGecko API"""
+    """Получает индекс страха и жадности с Alternative.me"""
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get("https://api.coingecko.com/api/v3/global") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    change = data.get("data", {}).get("market_cap_change_percentage_24h_usd")
-                    if change is not None:
-                        val = max(0, min(100, int(change + 50)))
-                        emoji = "😨" if val < 25 else "😰" if val < 45 else "😐" if val < 60 else "😊" if val < 75 else "🤑"
-                        return f"{emoji} <b>Сентимент рынка: {val}/100</b>"
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.alternative.me/fng/") as resp:
+                data = await resp.json()
+                val = int(data["data"][0]["value"])
+                label = data["data"][0]["value_classification"]
+                
+                emoji = "😨" if val < 25 else "😰" if val < 45 else "😐" if val < 60 else "😊" if val < 75 else "🤑"
+                return f"{emoji} <b>Индекс страха и жадности: {val}/100</b> ({label})"
     except Exception:
-        pass
-    return ""
+        return ""
 
 def _cleanup_price_history():
     """Очищает старые данные из PRICE_HISTORY для предотвращения утечки памяти."""
