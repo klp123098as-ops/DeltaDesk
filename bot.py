@@ -45,6 +45,7 @@ from market import (
     get_top_movers,
     format_movers,
 )
+from dex_scanner import scan_dex_tokens, format_dex_tokens
 from user_settings import (
     AVAILABLE_EXCHANGES,
     add_user_exchange,
@@ -458,6 +459,30 @@ async def alert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.exception(f"Alert command error: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}", parse_mode="HTML")
+
+
+async def dex_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сканирует новые токены на DEX (Solana/Raydium по умолчанию)."""
+    uid = update.effective_user.id
+    if not is_user_allowed(uid):
+        await update.message.reply_text("⛔️ Доступ ограничен.", parse_mode="HTML")
+        return
+
+    # Парсим аргументы (можно указать сеть: /dex ton или /dex solana)
+    network = "solana"
+    if context.args:
+        arg_network = context.args[0].lower()
+        if arg_network in ["solana", "ton"]:
+            network = arg_network
+
+    wait_msg = await update.message.reply_text(f"⏳ Сканирую {network.upper()} DEX...")
+    try:
+        tokens = await scan_dex_tokens(network=network, limit=15, min_liquidity_usd=10000)
+        text = format_dex_tokens(tokens, limit=10)
+        await wait_msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.exception("DEX scan error")
+        await wait_msg.edit_text(f"❌ Ошибка сканирования DEX: {str(e)}")
 
 
 async def alert_del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -928,6 +953,7 @@ async def post_init(application: Application) -> None:
             BotCommand("price", "Цена (напр. /price BTC)"),
             BotCommand("top", "Топ арбитража"),
             BotCommand("alert", "Уведомление по цене (напр. /alert BTC 65000)"),
+            BotCommand("dex", "Новые токены на DEX (Solana/TON)"),
             BotCommand("signals", "Авто-сигналы (on/off)"),
             BotCommand("min", "Мин. % (напр. /min 0.3)"),
             BotCommand("exchanges", "Мои биржи"),
@@ -977,6 +1003,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("min", min_cmd))
     app.add_handler(CommandHandler("alert", alert_cmd))
     app.add_handler(CommandHandler("alert_del", alert_del_cmd))
+    app.add_handler(CommandHandler("dex", dex_cmd))
     app.add_handler(CommandHandler("me", me_cmd))
     app.add_handler(CommandHandler("settings", settings_cmd))
     app.add_handler(CommandHandler("exchanges", exchanges_cmd))
