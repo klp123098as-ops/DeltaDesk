@@ -112,7 +112,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     user = update.effective_user
 
-    # Сохраняем информацию о пользователе
     save_user_info(uid, first_name=user.first_name or "", username=user.username or "")
 
     if not is_user_allowed(uid):
@@ -918,10 +917,11 @@ async def _send_analysis(update: Update, coin: str, edit: bool = False) -> None:
         # Получаем тех.анализ
         analysis_text = await analyze_symbol(symbol, exchanges)
         
-        # Добавляем индекс страха и жадности
+        # Добавляем индекс страха и жадности и источники
         fng_text = await get_fear_greed_index()
-        
-        final_text = f"{analysis_text}\n\n{fng_text}"
+
+        source_info = "\n\n📊 <b>Источники:</b>\n• Анализ: дневные свечи OHLCV с биржи (SMA7 vs SMA14)\n• Сентимент: CoinGecko API (движения капитализации рынка)\n• Не финансовый совет, только аналитика"
+        final_text = f"{analysis_text}\n\n{fng_text}{source_info}"
         base = symbol_base(symbol)
         await wait.edit_text(final_text, reply_markup=price_actions_keyboard(base), parse_mode="HTML")
     except ValueError as exc:
